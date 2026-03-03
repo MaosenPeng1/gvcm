@@ -8,18 +8,9 @@ The goal of gvcm is to ...
 
 ## Installation
 
-You can install the development version of gvcm like so:
+You can install the development version of **gvcm** from GitHub:
 
-``` r
-# FILL THIS IN! HOW CAN PEOPLE INSTALL YOUR DEV PACKAGE?
+```r
+# install.packages("remotes")  # if not already installed
+remotes::install_github("MaosenPeng1/gvcm")
 ```
-
-## Example
-
-This is a basic example which shows you how to solve a common problem:
-
-``` r
-library(gvcm)
-## basic example code
-```
-
