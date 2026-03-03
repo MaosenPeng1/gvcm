@@ -81,6 +81,7 @@ NULL
   link <- match.arg(link, c("gaussian","binomial","poisson"))
   if (link == "gaussian") return(eta)
   if (link == "binomial") return(1 / (1 + exp(-eta)))
+  eta <- pmin(pmax(eta, -8), 8)
   pmax(exp(eta), 1e-12)
 }
 
