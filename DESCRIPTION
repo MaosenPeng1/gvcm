@@ -26,3 +26,5 @@ Config/testthat/edition: 3
 Collate: 
     'utils.R'
     'gvcm.R'
+URL: https://github.com/MaosenPeng1/gvcm
+BugReports: https://github.com/MaosenPeng1/gvcm/issues
