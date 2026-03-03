@@ -55,7 +55,7 @@ NULL
   for (j in seq_len(p)) {
     zj <- Zmat[, j]
     if (basis == "poly") {
-      Bj <- stats::poly(zj, degree = df, raw = TRUE, simple = TRUE)
+      Bj <- stats::poly(zj, degree = df, raw = FALSE, simple = TRUE)
       Bj <- as.matrix(Bj)
       colnames(Bj) <- paste0("Z", j, "_poly", seq_len(ncol(Bj)))
       out_list[[j]] <- Bj
