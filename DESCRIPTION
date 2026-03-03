@@ -1,0 +1,28 @@
+Package: gvcm
+Type: Package
+Title: Double Machine Learning for Generalized Varying Coefficient Models
+Version: 0.1.0
+Authors@R: 
+    person(given = "Maosen",
+           family = "Peng",
+           email = "mpeng1@mdanderson.org",
+           role = c("aut", "cre"))
+Description: Implements a Double Machine Learning (DML) estimator for
+    generalized varying coefficient models (GVCM) under canonical
+    generalized linear model links. The package provides cross-fitted
+    estimation of nuisance functions using regularized regression
+    and inference for the average varying coefficient parameter.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
+Imports:
+    glmnet,
+    splines
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+Suggests: 
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
+Collate: 
+    'utils.R'
+    'gvcm.R'
