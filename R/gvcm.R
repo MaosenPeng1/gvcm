@@ -159,7 +159,11 @@ gvcm <- function(
   # -----------------------
   # 3) Create folds
   # -----------------------
-  fold_id <- .make_folds(n, K = K, seed = crossfit_seed)
+  if (link == "poisson") {
+    fold_id <- .make_folds(n, K = K, seed = crossfit_seed, strata = (Yv > 0))
+  } else {
+    fold_id <- .make_folds(n, K = K, seed = crossfit_seed)
+  }
 
   # Storage for cross-fitted predictions
   beta1_hat <- rep(NA_real_, n)

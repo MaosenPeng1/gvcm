@@ -70,10 +70,22 @@ NULL
 }
 
 #' @noRd
-.make_folds <- function(n, K = 5, seed = 1) {
+.make_folds <- function(n, K = 5, seed = 1, strata = NULL) {
   if (K < 2 || K > n) stop("K must be between 2 and n.")
   set.seed(seed)
-  sample(rep(seq_len(K), length.out = n))
+  if (is.null(strata)) {
+    return(sample(rep(seq_len(K), length.out = n)))
+  }
+
+  strata <- as.factor(strata)
+  foldid <- integer(n)
+  # assign folds within each stratum to balance composition across folds
+  for (lv in levels(strata)) {
+    idx <- which(strata == lv)
+    foldid[idx] <- sample(rep(seq_len(K), length.out = length(idx)))
+  }
+
+  foldid
 }
 
 #' @noRd
@@ -81,7 +93,6 @@ NULL
   link <- match.arg(link, c("gaussian","binomial","poisson"))
   if (link == "gaussian") return(eta)
   if (link == "binomial") return(1 / (1 + exp(-eta)))
-  eta <- pmin(pmax(eta, -8), 8)
   pmax(exp(eta), 1e-12)
 }
 
