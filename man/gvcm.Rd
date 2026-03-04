@@ -12,9 +12,9 @@ gvcm(
   link = c("gaussian", "binomial", "poisson"),
   K = 5,
   basis = c("ns", "poly", "none"),
-  df = 5,
+  df = NULL,
   standardize_Z = TRUE,
-  alpha = 1,
+  alpha = NULL,
   nfolds_glmnet = 5,
   lambda_rule = c("lambda.min", "lambda.1se"),
   crossfit_seed = 1,
@@ -35,11 +35,33 @@ gvcm(
 
 \item{basis}{basis expansion for Z: c("ns","poly","none")}
 
-\item{df}{degrees of freedom for basis (per Z column)}
+\item{df}{Degrees of freedom for the spline basis when \code{basis = "ns"}.
+Ignored when \code{basis = "none"} or \code{"poly"}.
+
+If \code{NULL} (default), a link-specific default is used:
+\itemize{
+\item \code{5} for \code{"gaussian"} and \code{"binomial"} links,
+\item \code{3} for the \code{"poisson"} link to reduce instability from the exponential link.
+}
+
+Users may specify a larger or smaller value to control the flexibility
+of the varying-coefficient functions.}
 
 \item{standardize_Z}{logical; center/scale raw Z before basis expansion}
 
-\item{alpha}{glmnet elastic-net alpha (1=lasso, 0=ridge)}
+\item{alpha}{Elastic-net mixing parameter used in the \pkg{glmnet} nuisance regressions.
+Must be between 0 and 1, where
+\itemize{
+\item \code{alpha = 0} corresponds to ridge regression,
+\item \code{alpha = 1} corresponds to lasso,
+\item intermediate values correspond to elastic net.
+}
+If \code{NULL} (default), a link-specific default is used:
+\itemize{
+\item \code{0.5} for \code{"gaussian"} and \code{"binomial"} links,
+\item \code{0} (ridge) for the \code{"poisson"} link to improve numerical stability.
+}
+Users may override this by providing an explicit value.}
 
 \item{nfolds_glmnet}{internal folds for cv.glmnet}
 

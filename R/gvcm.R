@@ -15,9 +15,31 @@ NULL
 #' @param link one of c("gaussian","binomial","poisson")
 #' @param K number of cross-fitting folds
 #' @param basis basis expansion for Z: c("ns","poly","none")
-#' @param df degrees of freedom for basis (per Z column)
+#' @param df Degrees of freedom for the spline basis when \code{basis = "ns"}.
+#'   Ignored when \code{basis = "none"} or \code{"poly"}.
+#'
+#'   If \code{NULL} (default), a link-specific default is used:
+#'   \itemize{
+#'     \item \code{5} for \code{"gaussian"} and \code{"binomial"} links,
+#'     \item \code{3} for the \code{"poisson"} link to reduce instability from the exponential link.
+#'   }
+#'
+#'   Users may specify a larger or smaller value to control the flexibility
+#'   of the varying-coefficient functions.
 #' @param standardize_Z logical; center/scale raw Z before basis expansion
-#' @param alpha glmnet elastic-net alpha (1=lasso, 0=ridge)
+#' @param alpha Elastic-net mixing parameter used in the \pkg{glmnet} nuisance regressions.
+#'   Must be between 0 and 1, where
+#'   \itemize{
+#'     \item \code{alpha = 0} corresponds to ridge regression,
+#'     \item \code{alpha = 1} corresponds to lasso,
+#'     \item intermediate values correspond to elastic net.
+#'   }
+#'   If \code{NULL} (default), a link-specific default is used:
+#'   \itemize{
+#'     \item \code{0.5} for \code{"gaussian"} and \code{"binomial"} links,
+#'     \item \code{0} (ridge) for the \code{"poisson"} link to improve numerical stability.
+#'   }
+#'   Users may override this by providing an explicit value.
 #' @param nfolds_glmnet internal folds for cv.glmnet
 #' @param lambda_rule c("lambda.min","lambda.1se")
 #' @param crossfit_seed seed for cross-fitting folds
@@ -32,9 +54,9 @@ gvcm <- function(
     link = c("gaussian","binomial","poisson"),
     K = 5,
     basis = c("ns","poly","none"),
-    df = 5,
+    df = NULL,
     standardize_Z = TRUE,
-    alpha = 1,
+    alpha = NULL,
     nfolds_glmnet = 5,
     lambda_rule = c("lambda.min","lambda.1se"),
     crossfit_seed = 1,
@@ -126,6 +148,21 @@ gvcm <- function(
   link <- match.arg(link, c("gaussian","binomial","poisson"))
   basis <- match.arg(basis, c("ns","poly","none"))
   lambda_rule <- match.arg(lambda_rule, c("lambda.min","lambda.1se"))
+
+  # -----------------------
+  # Link-specific defaults (only if not provided)
+  # -----------------------
+  if (is.null(alpha)) {
+    alpha <- if (link == "poisson") 0 else 0.5
+  }
+
+  if (is.null(df)) {
+    if (basis == "ns") {
+      df <- if (link == "poisson") 3 else 5
+    } else {
+      df <- 5  # df unused for basis="none"; safe placeholder
+    }
+  }
 
   if (!is.data.frame(data)) stop("data must be a data.frame.")
   n0 <- nrow(data)
