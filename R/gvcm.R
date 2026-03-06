@@ -28,18 +28,7 @@ NULL
 #'   of the varying-coefficient functions.
 #' @param standardize_Z logical; center/scale raw Z before basis expansion
 #' @param alpha Elastic-net mixing parameter used in the \pkg{glmnet} nuisance regressions.
-#'   Must be between 0 and 1, where
-#'   \itemize{
-#'     \item \code{alpha = 0} corresponds to ridge regression,
-#'     \item \code{alpha = 1} corresponds to lasso,
-#'     \item intermediate values correspond to elastic net.
-#'   }
-#'   If \code{NULL} (default), a link-specific default is used:
-#'   \itemize{
-#'     \item \code{0.5} for \code{"gaussian"} and \code{"binomial"} links,
-#'     \item \code{0} (ridge) for the \code{"poisson"} link to improve numerical stability.
-#'   }
-#'   Users may override this by providing an explicit value.
+#'   Must be between 0 and 1. Defualt is 0.5.
 #' @param nfolds_glmnet internal folds for cv.glmnet
 #' @param lambda_rule c("lambda.min","lambda.1se")
 #' @param crossfit_seed seed for cross-fitting folds
@@ -56,7 +45,7 @@ gvcm <- function(
     basis = c("ns","poly","none"),
     df = NULL,
     standardize_Z = TRUE,
-    alpha = NULL,
+    alpha = 0.5,
     nfolds_glmnet = 5,
     lambda_rule = c("lambda.min","lambda.1se"),
     crossfit_seed = 1,
@@ -156,10 +145,6 @@ gvcm <- function(
   # -----------------------
   # Link-specific defaults (only if not provided)
   # -----------------------
-  if (is.null(alpha)) {
-    alpha <- if (link == "poisson") 0 else 0.5
-  }
-
   if (is.null(df)) {
     if (basis == "ns") {
       df <- if (link == "poisson") 3 else 5
