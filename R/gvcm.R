@@ -130,16 +130,20 @@ gvcm <- function(
     as.numeric(stats::predict(m_obj$fit, newx = B_te, s = m_obj$lambda, type = "response"))
   }
 
-  .fit_J_model <- function(B_tr, T_tr, alpha, nfolds, lambda_rule) {
+  .fit_invar_model <- function(B_tr, Y_tr, weights, alpha, nfolds, lambda_rule) {
     .cv_glmnet_fit(
-      x = B_tr, y = as.numeric(T_tr),
+      x = B_tr,
+      y = Y_tr,
+      weights = weights,
       family = "gaussian",
-      alpha = alpha, nfolds = nfolds, lambda_rule = lambda_rule
+      alpha = alpha,
+      nfolds = nfolds,
+      lambda_rule = lambda_rule
     )
   }
 
-  .predict_J <- function(J_obj, B_te) {
-    as.numeric(stats::predict(J_obj$fit, newx = B_te, s = J_obj$lambda, type = "response"))
+  .predict_invar <- function(invar_obj, B_te) {
+    as.numeric(stats::predict(invar_obj$fit, newx = B_te, s = invar_obj$lambda, type = "response"))
   }
 
   # -----------------------
@@ -206,7 +210,7 @@ gvcm <- function(
   beta1_hat <- rep(NA_real_, n)
   mu_hat    <- rep(NA_real_, n)
   m_hat     <- rep(NA_real_, n)
-  J_hat     <- rep(NA_real_, n)
+  J_te_inv  <- rep(NA_real_, n)
 
   if (verbose) message("gvcm: cross-fitting with K = ", K, " folds; link = ", link, "; basis = ", basis)
 
@@ -246,26 +250,30 @@ gvcm <- function(
     m_te <- .predict_m(m_obj, B_te)
 
     # (c) Build pseudo outcome for J on training: T = (X - mhat)^2 * V(muhat)
-    V_tr <- .V_fun(mu_tr, link = link)
-    T_tr <- (X_tr - m_tr)^2 * V_tr
+    V_te <- .V_fun(mu_te, link = link)
+    r <- X_tr - m_tr
 
     # (d) Fit J(Z)=E[T|Z] on training, predict on test
-    J_obj <- .fit_J_model(
-      B_tr = B_tr, T_tr = T_tr,
-      alpha = alpha, nfolds = nfolds_glmnet, lambda_rule = lambda_rule
+    Y_tr_inv <- 1/(r^2+eps_J)
+    wt <- r^2+eps_J
+    invar_obj <- .fit_invar_model(
+      B_tr = B_tr, Y_tr = Y_tr_inv,
+      alpha = alpha, nfolds = nfolds_glmnet, lambda_rule = lambda_rule, weights = wt
     )
-    J_te <- .predict_J(J_obj, B_te)
-    J_te <- pmax(J_te, eps_J)
+    invar_te <- .predict_invar(invar_obj, B_te)
+    J_inv_te_fold <- invar_te / V_te
+    J_inv_te_fold <- pmax(J_inv_te_fold, eps_J)
 
     # Store test-fold predictions
     beta1_hat[idx_te] <- pred_te$beta1_hat
     mu_hat[idx_te]    <- mu_te
     m_hat[idx_te]     <- m_te
-    J_hat[idx_te]     <- J_te
+    J_te_inv[idx_te]  <- J_inv_te_fold
+
   }
 
   if (any(!is.finite(beta1_hat)) || any(!is.finite(mu_hat)) ||
-      any(!is.finite(m_hat))     || any(!is.finite(J_hat))) {
+      any(!is.finite(m_hat))     || any(!is.finite(J_te_inv))) {
     stop("Non-finite nuisance predictions encountered (check eps_J, basis, and glmnet fits).")
   }
 
@@ -275,7 +283,7 @@ gvcm <- function(
   # theta_hat = mean( beta1_hat + (X - m_hat)*(Y - mu_hat)/J_hat )
   # -----------------------
   X_tilde <- Xv - m_hat
-  adj_term <- X_tilde * (Yv - mu_hat) / J_hat
+  adj_term <- X_tilde * (Yv - mu_hat) * J_te_inv
 
   theta_hat <- mean(beta1_hat + adj_term)
 

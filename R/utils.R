@@ -106,7 +106,7 @@ NULL
 
 #' @noRd
 .cv_glmnet_fit <- function(
-    x, y,
+    x, y, weights = NULL,
     family = c("gaussian","binomial","poisson"),
     alpha = 1,
     nfolds = 5,
@@ -115,10 +115,11 @@ NULL
   if (!requireNamespace("glmnet", quietly = TRUE)) {
     stop("Package 'glmnet' is required.")
   }
+
   family <- match.arg(family, c("gaussian","binomial","poisson"))
   lambda_rule <- match.arg(lambda_rule, c("lambda.min","lambda.1se"))
 
-  fit <- glmnet::cv.glmnet(
+  args <- list(
     x = x,
     y = y,
     family = family,
@@ -127,6 +128,13 @@ NULL
     intercept = TRUE,
     standardize = FALSE
   )
+
+  if (!is.null(weights)) {
+    args$weights <- weights
+  }
+
+  fit <- do.call(glmnet::cv.glmnet, args)
+
   lam <- if (lambda_rule == "lambda.min") fit$lambda.min else fit$lambda.1se
   list(fit = fit, lambda = lam)
 }
