@@ -71,9 +71,10 @@ gvcm <- function(
     family_y <- match.arg(link, c("gaussian","binomial","poisson"))
 
     XB_tr <- B_tr * as.numeric(X_tr)
-    D_tr <- cbind(B_tr, XB_tr)
+    D_tr <- cbind(B_tr, X_tr, XB_tr)
     colnames(D_tr) <- c(
       paste0(colnames(B_tr), "_b0"),
+      "X_main",
       paste0(colnames(B_tr), "_b1")
     )
 
@@ -89,7 +90,7 @@ gvcm <- function(
     pB <- beta_obj$pB
 
     XB_te <- B_te * as.numeric(X_te)
-    D_te <- cbind(B_te, XB_te)
+    D_te <- cbind(B_te, X_te, XB_te)
 
     eta_hat <- as.numeric(stats::predict(
       beta_obj$cv$fit,
@@ -103,8 +104,14 @@ gvcm <- function(
       s = beta_obj$cv$lambda
     ))
     # Rows: 1 intercept; next pB for beta0; next pB for beta1
-    beta1_coef <- coefs[(1 + pB + 1):(1 + 2 * pB), 1, drop = TRUE]
-    beta1_hat <- as.numeric(B_te %*% beta1_coef)
+    idx_b0     <- 2:(1 + pB)
+    idx_xmain  <- 2 + pB
+    idx_b1     <- (3 + pB):(2 + 2 * pB)
+
+    x_main_coef <- coefs[idx_xmain, 1]
+    beta1_coef  <- coefs[idx_b1, 1, drop = TRUE]
+
+    beta1_hat <- as.numeric(x_main_coef + B_te %*% beta1_coef)
 
     list(eta_hat = eta_hat, beta1_hat = beta1_hat)
   }
