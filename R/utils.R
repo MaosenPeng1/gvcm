@@ -37,36 +37,105 @@ NULL
 }
 
 #' @noRd
-.make_basis <- function(Zmat, basis = c("ns","poly","none"), df = 5) {
-  basis <- match.arg(basis, c("ns","poly","none"))
+.make_basis <- function(Zmat, basis = "ns", df = 4) {
+  if (!is.matrix(Zmat)) Zmat <- as.matrix(Zmat)
+  n <- nrow(Zmat)
   p <- ncol(Zmat)
 
-  if (basis == "none") {
-    B <- Zmat
-    colnames(B) <- paste0("Z", seq_len(p))
+  # Give Z columns stable names if missing
+  if (is.null(colnames(Zmat))) {
+    colnames(Zmat) <- paste0("Z", seq_len(p))
+  }
+
+  # -------------------------
+  # Case 1: basis is a built-in character option
+  # -------------------------
+  if (is.character(basis) && length(basis) == 1L) {
+    basis <- match.arg(basis, c("ns","poly","none"))
+
+    if (basis == "none") {
+      B <- Zmat
+      return(B)
+    }
+
+    if (basis == "poly") {
+      out_list <- vector("list", p)
+      for (j in seq_len(p)) {
+        zj <- Zmat[, j]
+        Bj <- stats::poly(zj, degree = df, raw = FALSE, simple = TRUE)
+        Bj <- as.matrix(Bj)
+        colnames(Bj) <- paste0(colnames(Zmat)[j], "_poly", seq_len(ncol(Bj)))
+        out_list[[j]] <- Bj
+      }
+      return(do.call(cbind, out_list))
+    }
+
+    if (basis == "ns") {
+      if (!requireNamespace("splines", quietly = TRUE)) {
+        stop("Package 'splines' is required for basis = 'ns'.")
+      }
+      out_list <- vector("list", p)
+      for (j in seq_len(p)) {
+        zj <- Zmat[, j]
+        Bj <- splines::ns(zj, df = df)
+        Bj <- as.matrix(Bj)
+        colnames(Bj) <- paste0(colnames(Zmat)[j], "_ns", seq_len(ncol(Bj)))
+        out_list[[j]] <- Bj
+      }
+      return(do.call(cbind, out_list))
+    }
+  }
+
+  # -------------------------
+  # Case 2: basis is a formula
+  # -------------------------
+  if (inherits(basis, "formula")) {
+    Zdf <- as.data.frame(Zmat)
+    mm <- stats::model.matrix(basis, data = Zdf)
+
+    # remove intercept if present
+    if ("(Intercept)" %in% colnames(mm)) {
+      mm <- mm[, colnames(mm) != "(Intercept)", drop = FALSE]
+    }
+
+    if (!is.matrix(mm) || nrow(mm) != n) {
+      stop("Custom formula basis must produce a matrix with nrow(Zmat) rows.")
+    }
+    return(mm)
+  }
+
+  # -------------------------
+  # Case 3: basis is a function
+  # -------------------------
+  if (is.function(basis)) {
+    B <- basis(Zmat)
+    if (is.data.frame(B)) B <- as.matrix(B)
+    if (!is.matrix(B) || !is.numeric(B) || nrow(B) != n) {
+      stop("Custom basis function must return a numeric matrix with nrow(Zmat) rows.")
+    }
+    if (is.null(colnames(B))) {
+      colnames(B) <- paste0("B", seq_len(ncol(B)))
+    }
     return(B)
   }
 
-  if (!requireNamespace("splines", quietly = TRUE)) {
-    stop("Package 'splines' is required for basis expansion.")
+  # -------------------------
+  # Case 4: basis is already a matrix/data.frame
+  # -------------------------
+  if (is.data.frame(basis)) basis <- as.matrix(basis)
+  if (is.matrix(basis)) {
+    if (!is.numeric(basis) || nrow(basis) != n) {
+      stop("If basis is supplied as a matrix, it must be numeric and have nrow(Zmat) rows.")
+    }
+    if (is.null(colnames(basis))) {
+      colnames(basis) <- paste0("B", seq_len(ncol(basis)))
+    }
+    return(basis)
   }
 
-  out_list <- vector("list", p)
-  for (j in seq_len(p)) {
-    zj <- Zmat[, j]
-    if (basis == "poly") {
-      Bj <- stats::poly(zj, degree = df, raw = FALSE, simple = TRUE)
-      Bj <- as.matrix(Bj)
-      colnames(Bj) <- paste0("Z", j, "_poly", seq_len(ncol(Bj)))
-      out_list[[j]] <- Bj
-    } else { # ns
-      Bj <- splines::ns(zj, df = df)
-      Bj <- as.matrix(Bj)
-      colnames(Bj) <- paste0("Z", j, "_ns", seq_len(ncol(Bj)))
-      out_list[[j]] <- Bj
-    }
-  }
-  do.call(cbind, out_list)
+  stop(
+    "basis must be one of 'ns', 'poly', 'none', or a formula, function, matrix, or data.frame."
+  )
 }
 
 #' @noRd

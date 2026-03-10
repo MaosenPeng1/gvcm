@@ -14,18 +14,20 @@ NULL
 #' @param Z covariates: column names (character vector) or matrix/data.frame
 #' @param link one of c("gaussian","binomial","poisson")
 #' @param K number of cross-fitting folds
-#' @param basis basis expansion for Z: c("ns","poly","none")
-#' @param df Degrees of freedom for the spline basis when \code{basis = "ns"}.
-#'   Ignored when \code{basis = "none"} or \code{"poly"}.
-#'
-#'   If \code{NULL} (default), a link-specific default is used:
+#' @param basis Basis specification for Z. Can be:
 #'   \itemize{
-#'     \item \code{5} for \code{"gaussian"} and \code{"binomial"} links,
-#'     \item \code{3} for the \code{"poisson"} link to reduce instability from the exponential link.
+#'     \item \code{"ns"}: natural spline basis applied column-wise,
+#'     \item \code{"poly"}: orthogonal polynomial basis applied column-wise,
+#'     \item \code{"none"}: use raw Z directly,
+#'     \item a formula, e.g. \code{~ Z1 + Z2 + Z1:Z2 + I(Z1^2)},
+#'     \item a function that takes the processed Z matrix and returns a numeric basis matrix,
+#'     \item or a precomputed numeric matrix/data.frame with the same number of rows as the analysis data.
 #'   }
 #'
-#'   Users may specify a larger or smaller value to control the flexibility
-#'   of the varying-coefficient functions.
+#'   Built-in options are convenient defaults. Custom specifications allow users
+#'   to include interactions, nonlinear transforms, or other user-defined basis terms
+#'   while leaving the rest of the estimation procedure unchanged.
+#' @param df Degrees of freedom for the spline basi. Default is 4.
 #' @param standardize_Z logical; center/scale raw Z before basis expansion
 #' @param alpha Elastic-net mixing parameter used in the \pkg{glmnet} nuisance regressions.
 #'   Must be between 0 and 1. Defualt is 0.5.
@@ -139,17 +141,17 @@ gvcm <- function(
   # 1) Parse inputs + drop missing
   # -----------------------
   link <- match.arg(link, c("gaussian","binomial","poisson"))
-  basis <- match.arg(basis, c("ns","poly","none"))
   lambda_rule <- match.arg(lambda_rule, c("lambda.min","lambda.1se"))
 
-  # -----------------------
-  # Link-specific defaults (only if not provided)
-  # -----------------------
+  # basis validation only for built-in character options
+  if (is.character(basis) && length(basis) == 1L) {
+    basis <- match.arg(basis, c("ns","poly","none"))
+  }
+
   if (is.null(df)) {
-    if (basis == "ns") {
-      df <- if (link == "poisson") 3 else 5
-    } else {
-      df <- 5  # df unused for basis="none"; safe placeholder
+    if (is.character(basis) && length(basis) == 1L &&
+        basis %in% c("ns", "poly", "none")) {
+      df <- 4
     }
   }
 

@@ -14,7 +14,7 @@ gvcm(
   basis = c("ns", "poly", "none"),
   df = NULL,
   standardize_Z = TRUE,
-  alpha = NULL,
+  alpha = 0.5,
   nfolds_glmnet = 5,
   lambda_rule = c("lambda.min", "lambda.1se"),
   crossfit_seed = 1,
@@ -33,35 +33,26 @@ gvcm(
 
 \item{K}{number of cross-fitting folds}
 
-\item{basis}{basis expansion for Z: c("ns","poly","none")}
-
-\item{df}{Degrees of freedom for the spline basis when \code{basis = "ns"}.
-Ignored when \code{basis = "none"} or \code{"poly"}.
-
-If \code{NULL} (default), a link-specific default is used:
+\item{basis}{Basis specification for Z. Can be:
 \itemize{
-\item \code{5} for \code{"gaussian"} and \code{"binomial"} links,
-\item \code{3} for the \code{"poisson"} link to reduce instability from the exponential link.
+\item \code{"ns"}: natural spline basis applied column-wise,
+\item \code{"poly"}: orthogonal polynomial basis applied column-wise,
+\item \code{"none"}: use raw Z directly,
+\item a formula, e.g. \code{~ Z1 + Z2 + Z1:Z2 + I(Z1^2)},
+\item a function that takes the processed Z matrix and returns a numeric basis matrix,
+\item or a precomputed numeric matrix/data.frame with the same number of rows as the analysis data.
 }
 
-Users may specify a larger or smaller value to control the flexibility
-of the varying-coefficient functions.}
+Built-in options are convenient defaults. Custom specifications allow users
+to include interactions, nonlinear transforms, or other user-defined basis terms
+while leaving the rest of the estimation procedure unchanged.}
+
+\item{df}{Degrees of freedom for the spline basi. Default is 4.}
 
 \item{standardize_Z}{logical; center/scale raw Z before basis expansion}
 
 \item{alpha}{Elastic-net mixing parameter used in the \pkg{glmnet} nuisance regressions.
-Must be between 0 and 1, where
-\itemize{
-\item \code{alpha = 0} corresponds to ridge regression,
-\item \code{alpha = 1} corresponds to lasso,
-\item intermediate values correspond to elastic net.
-}
-If \code{NULL} (default), a link-specific default is used:
-\itemize{
-\item \code{0.5} for \code{"gaussian"} and \code{"binomial"} links,
-\item \code{0} (ridge) for the \code{"poisson"} link to improve numerical stability.
-}
-Users may override this by providing an explicit value.}
+Must be between 0 and 1. Defualt is 0.5.}
 
 \item{nfolds_glmnet}{internal folds for cv.glmnet}
 
