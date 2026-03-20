@@ -1,168 +1,300 @@
 #' @include utils.R
+#' @include learner_dispatch.R
+#' @include sieve_models.R
+#' @include deep_models.R
 NULL
 
-#' Generalized Varying Coefficient Model (GVCM) DML estimator (minimal paper version)
+#' Generalized Varying Coefficient Model (GVCM) DML estimator
 #'
-#' Fits a generalized varying coefficient model under a canonical GLM link:
-#' \eqn{g(\mathbb{E}[Y \mid X, Z]) = \beta_0(Z) + \beta_1(Z)\,X}
-#' and estimates the target parameter
-#' \eqn{\theta = \mathbb{E}[\beta_1(Z)]}
-#' using cross-fitted Double Machine Learning (DML).
+#' Fits the model
+#' \deqn{g\{E(Y \mid X, Z)\} = \beta_0(Z) + \beta_1(Z) X}
+#' and targets
+#' \deqn{\theta = E\{\beta_1(Z)\}.}
 #'
-#' @param data data.frame
-#' @param Y,X outcome/treatment: column name (character) or numeric vector
-#' @param Z covariates: column names (character vector) or matrix/data.frame
-#' @param link one of c("gaussian","binomial","poisson")
-#' @param K number of cross-fitting folds
-#' @param basis Basis specification for Z. Can be:
+#' The estimator uses cross-fitting and an efficient influence function (EIF)
+#' with nuisance components estimated by either sieve-based learners or
+#' deep neural networks.
+#'
+#' Supported links are:
+#' \itemize{
+#'   \item \code{"gaussian"} with identity link,
+#'   \item \code{"binomial"} with logit link,
+#'   \item \code{"poisson"} with log link.
+#' }
+#'
+#' @param data A \code{data.frame} containing the analysis variables.
+#' @param Y Outcome variable, supplied either as a column name (character)
+#'   in \code{data} or as a numeric vector of length \code{nrow(data)}.
+#' @param X Exposure/treatment variable, supplied either as a column name
+#'   (character) in \code{data} or as a numeric vector of length \code{nrow(data)}.
+#' @param Z Covariates, supplied as a character vector of column names, or as
+#'   a numeric matrix/data.frame with \code{nrow(data)} rows.
+#' @param link One of \code{c("gaussian","binomial","poisson")}.
+#' @param learner Nuisance learner type. One of \code{c("sieve","deepnet")}.
+#' @param K Number of cross-fitting folds.
+#' @param standardize_Z Logical; if \code{TRUE}, raw \code{Z} is centered and
+#'   scaled before basis expansion (for sieve) or before being passed into the
+#'   deep network learner.
+#' @param crossfit_seed Random seed used to generate cross-fitting folds.
+#' @param eps_J Small positive constant used to lower-truncate the estimated
+#'   inverse information term to avoid division by zero or numerically unstable
+#'   values.
+#' @param sieve_args A named list of tuning parameters for the sieve learner.
+#'   Supported components are:
 #'   \itemize{
-#'     \item \code{"ns"}: natural spline basis applied column-wise,
-#'     \item \code{"poly"}: orthogonal polynomial basis applied column-wise,
-#'     \item \code{"none"}: use raw Z directly,
-#'     \item a formula, e.g. \code{~ Z1 + Z2 + Z1:Z2 + I(Z1^2)},
-#'     \item a function that takes the processed Z matrix and returns a numeric basis matrix,
-#'     \item or a precomputed numeric matrix/data.frame with the same number of rows as the analysis data.
+#'     \item \code{basis}: one of \code{"ns"}, \code{"poly"}, or \code{"none"},
+#'     \item \code{df}: degrees of freedom for \code{"ns"} or \code{"poly"},
+#'     \item \code{alpha}: elastic-net mixing parameter for \pkg{glmnet},
+#'     \item \code{nfolds_glmnet}: internal folds for \code{cv.glmnet},
+#'     \item \code{lambda_rule}: one of \code{"lambda.min"} or \code{"lambda.1se"}.
+#'   }
+#' @param net_args A named list of tuning parameters for the deep neural network
+#'   learner. Supported components are:
+#'   \itemize{
+#'     \item \code{hidden_dims}: integer vector giving hidden-layer widths,
+#'     \item \code{dropout}: dropout rate in \code{[0,1)},
+#'     \item \code{n_residual}: number of residual blocks applied after the shared trunk,
+#'     \item \code{lr}: learning rate for Adam,
+#'     \item \code{epochs}: maximum number of training epochs,
+#'     \item \code{batch_size}: mini-batch size,
+#'     \item \code{weight_decay}: weight decay passed to Adam,
+#'     \item \code{valid_prop}: proportion of the training fold used as a validation split,
+#'     \item \code{early_stop_patience}: early stopping patience,
+#'     \item \code{min_delta}: minimum validation improvement required to reset patience,
+#'     \item \code{device}: computation device, typically \code{"cpu"} or \code{"cuda"},
+#'     \item \code{seed}: random seed used inside network fitting,
+#'     \item \code{verbose}: logical; if \code{TRUE}, training progress is printed.
 #'   }
 #'
-#'   Built-in options are convenient defaults. Custom specifications allow users
-#'   to include interactions, nonlinear transforms, or other user-defined basis terms
-#'   while leaving the rest of the estimation procedure unchanged.
-#' @param df Degrees of freedom for the spline basi. Default is 4.
-#' @param standardize_Z logical; center/scale raw Z before basis expansion
-#' @param alpha Elastic-net mixing parameter used in the \pkg{glmnet} nuisance regressions.
-#'   Must be between 0 and 1. Defualt is 0.5.
-#' @param nfolds_glmnet internal folds for cv.glmnet
-#' @param lambda_rule c("lambda.min","lambda.1se")
-#' @param crossfit_seed seed for cross-fitting folds
-#' @param eps_J lower truncation for \eqn{\hat J(Z)} to avoid division by zero
-#' @param verbose logical
-#'
-#' @return A list with \code{theta_hat}, \code{se_hat}, and \code{ci}.
+#' @return A list with components
+#' \itemize{
+#'   \item \code{theta_hat}: estimated target parameter,
+#'   \item \code{se_hat}: estimated standard error,
+#'   \item \code{ci}: Wald-type 95\% confidence interval,
+#'   \item \code{n}: number of complete cases used,
+#'   \item \code{K}: number of cross-fitting folds,
+#'   \item \code{link}: link used,
+#'   \item \code{learner}: nuisance learner used,
+#'   \item \code{beta1_hat}: cross-fitted estimates of \eqn{\beta_1(Z_i)},
+#'   \item \code{m_hat}: cross-fitted estimates of \eqn{E(X\mid Z_i)},
+#'   \item \code{mu_hat}: cross-fitted estimates of \eqn{E(Y\mid X_i,Z_i)},
+#'   \item \code{J_inv_hat}: cross-fitted estimates of \eqn{1/J(Z_i)},
+#' }
 #' @export
 gvcm <- function(
     data,
     Y, X, Z,
     link = c("gaussian","binomial","poisson"),
+    learner = c("sieve","deepnet"),
     K = 5,
-    basis = c("ns","poly","none"),
-    df = NULL,
     standardize_Z = TRUE,
-    alpha = 0.5,
-    nfolds_glmnet = 5,
-    lambda_rule = c("lambda.min","lambda.1se"),
     crossfit_seed = 1,
-    eps_J = 1e-8,
-    verbose = TRUE
-) {
+    eps_J = 1e-6,
+    sieve_args = list(
+      basis = "ns",
+      df = NULL,
+      alpha = 1,
+      nfolds_glmnet = 5,
+      lambda_rule = "lambda.min"
+    ),
+    net_args = list(
+      hidden_dims = c(32),
+      dropout = 0,
+      n_residual = 1,
+      lr = 5e-4,
+      epochs = 200,
+      batch_size = 32,
+      weight_decay = 1e-4,
+      valid_prop = 0.1,
+      early_stop_patience = 15,
+      min_delta = 1e-4,
+      device = "cpu",
+      seed = 1,
+      verbose = FALSE
+    )
+)
+{
   # -----------------------
   # Dependencies
   # -----------------------
-  if (!requireNamespace("glmnet", quietly = TRUE)) {
-    stop("Package 'glmnet' is required.")
+  learner <- match.arg(learner, c("sieve", "deepnet"))
+  link    <- match.arg(link, c("gaussian","binomial","poisson"))
+
+  if (!is.data.frame(data)) stop("data must be a data.frame.")
+
+  if (learner == "sieve") {
+    if (!requireNamespace("glmnet", quietly = TRUE)) {
+      stop("Package 'glmnet' is required for learner = 'sieve'.")
+    }
   }
-  if (!requireNamespace("splines", quietly = TRUE)) {
-    stop("Package 'splines' is required (for basis='ns').")
+
+  if (learner == "deepnet") {
+    if (!requireNamespace("torch", quietly = TRUE)) {
+      stop("Package 'torch' is required for learner = 'deepnet'.")
+    }
   }
 
   # -----------------------
-  # Local helpers (model-specific only)
+  # 0) Resolve learner-specific arguments
   # -----------------------
-  .fit_beta_model <- function(B_tr, X_tr, Y_tr, link, alpha, nfolds, lambda_rule) {
-    family_y <- match.arg(link, c("gaussian","binomial","poisson"))
+  sieve_defaults <- list(
+    basis = "ns",
+    df = NULL,
+    alpha = 1,
+    nfolds_glmnet = 5,
+    lambda_rule = "lambda.min"
+  )
 
-    XB_tr <- B_tr * as.numeric(X_tr)
-    D_tr <- cbind(B_tr, X_tr, XB_tr)
-    colnames(D_tr) <- c(
-      paste0(colnames(B_tr), "_b0"),
-      "X_main",
-      paste0(colnames(B_tr), "_b1")
+  net_defaults <- list(
+    hidden_dims = c(32),
+    dropout = 0,
+    n_residual = 1,
+    lr = 5e-4,
+    epochs = 200,
+    batch_size = 32,
+    weight_decay = 1e-4,
+    valid_prop = 0.1,
+    early_stop_patience = 15,
+    min_delta = 1e-4,
+    device = "cpu",
+    seed = 1,
+    verbose = FALSE
+  )
+
+  sieve_args <- .fill_defaults(sieve_defaults, sieve_args)
+  net_args   <- .fill_defaults(net_defaults, net_args)
+
+  # -----------------------
+  # 0a) Validate sieve args
+  # -----------------------
+  if (learner == "sieve") {
+    sieve_args$basis <- match.arg(sieve_args$basis, c("ns","poly","none"))
+    sieve_args$lambda_rule <- match.arg(
+      sieve_args$lambda_rule,
+      c("lambda.min","lambda.1se")
     )
 
-    cv <- .cv_glmnet_fit(
-      x = D_tr, y = Y_tr,
-      family = family_y,
-      alpha = alpha, nfolds = nfolds, lambda_rule = lambda_rule
-    )
-    list(cv = cv, pB = ncol(B_tr))
+    if (is.null(sieve_args$df)) {
+      sieve_args$df <- 4
+    }
+
+    if (!is.numeric(sieve_args$alpha) || length(sieve_args$alpha) != 1L ||
+        sieve_args$alpha < 0 || sieve_args$alpha > 1) {
+      stop("sieve_args$alpha must be a single number in [0, 1].")
+    }
+
+    if (!is.numeric(sieve_args$nfolds_glmnet) ||
+        length(sieve_args$nfolds_glmnet) != 1L ||
+        sieve_args$nfolds_glmnet < 2) {
+      stop("sieve_args$nfolds_glmnet must be a single integer >= 2.")
+    }
+
+    if (identical(sieve_args$basis, "ns")) {
+      if (!requireNamespace("splines", quietly = TRUE)) {
+        stop("Package 'splines' is required for sieve_args$basis = 'ns'.")
+      }
+    }
   }
 
-  .predict_eta_beta1 <- function(beta_obj, B_te, X_te) {
-    pB <- beta_obj$pB
-
-    XB_te <- B_te * as.numeric(X_te)
-    D_te <- cbind(B_te, X_te, XB_te)
-
-    eta_hat <- as.numeric(stats::predict(
-      beta_obj$cv$fit,
-      newx = D_te,
-      s = beta_obj$cv$lambda,
-      type = "link"
-    ))
-
-    coefs <- as.matrix(glmnet::coef.glmnet(
-      beta_obj$cv$fit$glmnet.fit,
-      s = beta_obj$cv$lambda
-    ))
-    # Rows: 1 intercept; next pB for beta0; next pB for beta1
-    idx_b0     <- 2:(1 + pB)
-    idx_xmain  <- 2 + pB
-    idx_b1     <- (3 + pB):(2 + 2 * pB)
-
-    x_main_coef <- coefs[idx_xmain, 1]
-    beta1_coef  <- coefs[idx_b1, 1, drop = TRUE]
-
-    beta1_hat <- as.numeric(x_main_coef + B_te %*% beta1_coef)
-
-    list(eta_hat = eta_hat, beta1_hat = beta1_hat)
+  # convenient local aliases: sieve
+  if (learner == "sieve") {
+    basis         <- sieve_args$basis
+    df            <- sieve_args$df
+    alpha         <- sieve_args$alpha
+    nfolds_glmnet <- sieve_args$nfolds_glmnet
+    lambda_rule   <- sieve_args$lambda_rule
   }
 
-  .fit_m_model <- function(B_tr, X_tr, alpha, nfolds, lambda_rule) {
-    .cv_glmnet_fit(
-      x = B_tr, y = as.numeric(X_tr),
-      family = "gaussian",
-      alpha = alpha, nfolds = nfolds, lambda_rule = lambda_rule
-    )
+  # -----------------------
+  # 0b) Validate deepnet args
+  # -----------------------
+  if (learner == "deepnet") {
+    if (!is.numeric(net_args$hidden_dims) || length(net_args$hidden_dims) < 1L) {
+      stop("net_args$hidden_dims must be a numeric vector of positive integers.")
+    }
+    if (any(net_args$hidden_dims <= 0)) {
+      stop("All entries of net_args$hidden_dims must be positive.")
+    }
+
+    if (!is.numeric(net_args$dropout) || length(net_args$dropout) != 1L ||
+        net_args$dropout < 0 || net_args$dropout >= 1) {
+      stop("net_args$dropout must be a single number in [0, 1).")
+    }
+
+    if (!is.numeric(net_args$lr) || length(net_args$lr) != 1L ||
+        net_args$lr <= 0) {
+      stop("net_args$lr must be a positive number.")
+    }
+
+    if (!is.numeric(net_args$epochs) || length(net_args$epochs) != 1L ||
+        net_args$epochs < 1) {
+      stop("net_args$epochs must be a positive integer.")
+    }
+
+    if (!is.numeric(net_args$batch_size) || length(net_args$batch_size) != 1L ||
+        net_args$batch_size < 1) {
+      stop("net_args$batch_size must be a positive integer.")
+    }
+
+    if (!is.numeric(net_args$weight_decay) ||
+        length(net_args$weight_decay) != 1L ||
+        net_args$weight_decay < 0) {
+      stop("net_args$weight_decay must be a nonnegative number.")
+    }
+    if (!is.numeric(net_args$n_residual) || length(net_args$n_residual) != 1L ||
+        net_args$n_residual < 0) {
+      stop("net_args$n_residual must be a single nonnegative integer.")
+    }
+
+    if (!is.numeric(net_args$valid_prop) || length(net_args$valid_prop) != 1L ||
+        net_args$valid_prop <= 0 || net_args$valid_prop >= 1) {
+      stop("net_args$valid_prop must be a single number in (0, 1).")
+    }
+
+    if (!is.numeric(net_args$early_stop_patience) ||
+        length(net_args$early_stop_patience) != 1L ||
+        net_args$early_stop_patience < 1) {
+      stop("net_args$early_stop_patience must be a positive integer.")
+    }
+
+    if (!is.numeric(net_args$min_delta) || length(net_args$min_delta) != 1L ||
+        net_args$min_delta < 0) {
+      stop("net_args$min_delta must be a nonnegative number.")
+    }
+
+    if (!is.character(net_args$device) || length(net_args$device) != 1L) {
+      stop("net_args$device must be a single character string.")
+    }
+
+    if (!is.numeric(net_args$seed) || length(net_args$seed) != 1L) {
+      stop("net_args$seed must be a single numeric value.")
+    }
+
+    if (!is.logical(net_args$verbose) || length(net_args$verbose) != 1L) {
+      stop("net_args$verbose must be TRUE or FALSE.")
+    }
   }
 
-  .predict_m <- function(m_obj, B_te) {
-    as.numeric(stats::predict(m_obj$fit, newx = B_te, s = m_obj$lambda, type = "response"))
-  }
-
-  .fit_invar_model <- function(B_tr, Y_tr, weights, alpha, nfolds, lambda_rule) {
-    .cv_glmnet_fit(
-      x = B_tr,
-      y = Y_tr,
-      weights = weights,
-      family = "gaussian",
-      alpha = alpha,
-      nfolds = nfolds,
-      lambda_rule = lambda_rule
-    )
-  }
-
-  .predict_invar <- function(invar_obj, B_te) {
-    as.numeric(stats::predict(invar_obj$fit, newx = B_te, s = invar_obj$lambda, type = "response"))
+  # convenient local aliases: deepnet
+  if (learner == "deepnet") {
+    hidden_dims          <- as.integer(net_args$hidden_dims)
+    dropout              <- net_args$dropout
+    n_residual           <- as.integer(net_args$n_residual)
+    lr                   <- net_args$lr
+    epochs               <- as.integer(net_args$epochs)
+    batch_size           <- as.integer(net_args$batch_size)
+    weight_decay         <- net_args$weight_decay
+    valid_prop           <- net_args$valid_prop
+    early_stop_patience  <- as.integer(net_args$early_stop_patience)
+    min_delta            <- net_args$min_delta
+    device               <- net_args$device
+    seed                 <- net_args$seed
+    verbose              <- net_args$verbose
   }
 
   # -----------------------
   # 1) Parse inputs + drop missing
   # -----------------------
-  link <- match.arg(link, c("gaussian","binomial","poisson"))
-  lambda_rule <- match.arg(lambda_rule, c("lambda.min","lambda.1se"))
-
-  # basis validation only for built-in character options
-  if (is.character(basis) && length(basis) == 1L) {
-    basis <- match.arg(basis, c("ns","poly","none"))
-  }
-
-  if (is.null(df)) {
-    if (is.character(basis) && length(basis) == 1L &&
-        basis %in% c("ns", "poly", "none")) {
-      df <- 4
-    }
-  }
-
-  if (!is.data.frame(data)) stop("data must be a data.frame.")
   n0 <- nrow(data)
 
   Yv <- .as_vec(Y, data, n0)
@@ -179,17 +311,23 @@ gvcm <- function(
   if (K < 2 || K > n) stop("K must be between 2 and n.")
 
   # -----------------------
-  # 2) Build basis
+  # 2) Preprocess Z
   # -----------------------
   if (standardize_Z) {
     st <- .standardize(Zv)
     Zv_use <- st$M
   } else {
+    st <- NULL
     Zv_use <- Zv
   }
 
-  B <- .make_basis(Zv_use, basis = basis, df = df)
-  B <- as.matrix(B)
+  # basis matrix is only needed for sieve learner
+  if (learner == "sieve") {
+    B <- .make_basis(Zv_use, basis = basis, df = df)
+    B <- as.matrix(B)
+  } else {
+    B <- NULL
+  }
 
   # -----------------------
   # 3) Create folds
@@ -206,8 +344,6 @@ gvcm <- function(
   m_hat     <- rep(NA_real_, n)
   J_te_inv  <- rep(NA_real_, n)
 
-  if (verbose) message("gvcm: cross-fitting with K = ", K, " folds; link = ", link, "; basis = ", basis)
-
   # -----------------------
   # 4) Cross-fitting loop
   # -----------------------
@@ -215,68 +351,136 @@ gvcm <- function(
     idx_te <- which(fold_id == k)
     idx_tr <- which(fold_id != k)
 
-    B_tr <- B[idx_tr, , drop = FALSE]
-    B_te <- B[idx_te, , drop = FALSE]
+    # learner-specific feature inputs
+    if (learner == "sieve") {
+      B_tr <- B[idx_tr, , drop = FALSE]
+      B_te <- B[idx_te, , drop = FALSE]
+    } else {
+      B_tr <- NULL
+      B_te <- NULL
+    }
+
+    Z_tr <- Zv_use[idx_tr, , drop = FALSE]
+    Z_te <- Zv_use[idx_te, , drop = FALSE]
+
     X_tr <- Xv[idx_tr]
     X_te <- Xv[idx_te]
     Y_tr <- Yv[idx_tr]
 
+    # -----------------------
     # (a) Fit beta model on training
+    # -----------------------
     beta_obj <- .fit_beta_model(
-      B_tr = B_tr, X_tr = X_tr, Y_tr = Y_tr,
-      link = link,
-      alpha = alpha, nfolds = nfolds_glmnet, lambda_rule = lambda_rule
+      learner    = learner,
+      B_tr       = B_tr,
+      Z_tr       = Z_tr,
+      X_tr       = X_tr,
+      Y_tr       = Y_tr,
+      link       = link,
+      sieve_args = sieve_args,
+      net_args   = net_args
     )
 
-    # Predict eta on train (for pseudo outcome) and eta/beta1 on test
-    pred_tr <- .predict_eta_beta1(beta_obj, B_te = B_tr, X_te = X_tr)
-    pred_te <- .predict_eta_beta1(beta_obj, B_te = B_te, X_te = X_te)
+    beta_pred_te <- .predict_beta_model(
+      fit     = beta_obj,
+      learner = learner,
+      B_te    = B_te,
+      Z_te    = Z_te,
+      X_te    = X_te
+    )
 
-    mu_tr <- .inv_link(pred_tr$eta_hat, link = link)
-    mu_te <- .inv_link(pred_te$eta_hat, link = link)
+    eta_hat_te   <- beta_pred_te$eta_hat
+    beta1_hat_te <- beta_pred_te$beta1_hat
+    mu_hat_te    <- .inv_link(eta_hat_te, link = link)
+    # if (link == "binomial") {
+    #   mu_hat_te <- pmin(pmax(mu_hat_te, 0.01), 0.99)
+    # }
 
+    # -----------------------
     # (b) Fit m(Z)=E[X|Z] on training
+    # -----------------------
     m_obj <- .fit_m_model(
-      B_tr = B_tr, X_tr = X_tr,
-      alpha = alpha, nfolds = nfolds_glmnet, lambda_rule = lambda_rule
+      learner    = learner,
+      B_tr       = B_tr,
+      Z_tr       = Z_tr,
+      X_tr       = X_tr,
+      sieve_args = sieve_args,
+      net_args   = net_args
     )
-    m_tr <- .predict_m(m_obj, B_tr)
-    m_te <- .predict_m(m_obj, B_te)
 
-    # (c) Build pseudo outcome for J on training: T = (X - mhat)^2 * V(muhat)
-    V_te <- .V_fun(mu_te, link = link)
-    r <- X_tr - m_tr
+    m_hat_tr <- .predict_m_model(
+      fit     = m_obj,
+      learner = learner,
+      B_te    = B_tr,
+      Z_te    = Z_tr
+    )
 
-    # (d) Fit J(Z)=E[T|Z] on training, predict on test
-    Y_tr_inv <- 1/(r^2+eps_J)
-    wt <- r^2+eps_J
+    m_hat_te <- .predict_m_model(
+      fit     = m_obj,
+      learner = learner,
+      B_te    = B_te,
+      Z_te    = Z_te
+    )
+
+    # -----------------------
+    # (c) Build pseudo outcome for J on training
+    #     T = (X - mhat)^2 * V(muhat)
+    # -----------------------
+    r_tr <- X_tr - m_hat_tr
+    Y_tr_inv <- 1 / (r_tr^2 + eps_J)
+    wt_tr    <- r_tr^2 + eps_J
+
+    # -----------------------
+    # (d) Fit J^{-1}(Z) via weighted regression on training,
+    #     then convert to fold-specific J^{-1}(Z) on test
+    # -----------------------
     invar_obj <- .fit_invar_model(
-      B_tr = B_tr, Y_tr = Y_tr_inv,
-      alpha = alpha, nfolds = nfolds_glmnet, lambda_rule = lambda_rule, weights = wt
+      learner    = learner,
+      B_tr       = B_tr,
+      Z_tr       = Z_tr,
+      Y_tr       = Y_tr_inv,
+      weights    = wt_tr,
+      sieve_args = sieve_args,
+      net_args   = net_args
     )
-    invar_te <- .predict_invar(invar_obj, B_te)
+
+    invar_te <- .predict_invar_model(
+      fit     = invar_obj,
+      learner = learner,
+      B_te    = B_te,
+      Z_te    = Z_te
+    )
+
+    V_te <- .V_fun(mu_hat_te, link = link)
     J_inv_te_fold <- invar_te / V_te
     J_inv_te_fold <- pmax(J_inv_te_fold, eps_J)
 
-    # Store test-fold predictions
-    beta1_hat[idx_te] <- pred_te$beta1_hat
-    mu_hat[idx_te]    <- mu_te
-    m_hat[idx_te]     <- m_te
-    J_te_inv[idx_te]  <- J_inv_te_fold
+    # if (link == "binomial") {
+    #   mu_hat_te <- pmin(pmax(mu_hat_te, 0.01), 0.99)
+    # }
 
+    # -----------------------
+    # store fold-specific predictions
+    # -----------------------
+    beta1_hat[idx_te] <- beta1_hat_te
+    mu_hat[idx_te]    <- mu_hat_te
+    m_hat[idx_te]     <- m_hat_te
+    J_te_inv[idx_te]  <- J_inv_te_fold
   }
 
   if (any(!is.finite(beta1_hat)) || any(!is.finite(mu_hat)) ||
       any(!is.finite(m_hat))     || any(!is.finite(J_te_inv))) {
-    stop("Non-finite nuisance predictions encountered (check eps_J, basis, and glmnet fits).")
+    stop("Non-finite nuisance predictions encountered. Check eps_J, learner settings, and nuisance model fits.")
   }
 
   # -----------------------
   # 5) Compute theta + se via EIF
-  # EIF (canonical): phi_i = beta1(Z_i) - theta + (X - m(Z)) * (Y - mu) / J(Z)
-  # theta_hat = mean( beta1_hat + (X - m_hat)*(Y - mu_hat)/J_hat )
+  # EIF (canonical):
+  #   phi_i = beta1(Z_i) - theta + (X_i - m(Z_i)) * (Y_i - mu_i) / J(Z_i)
+  # Since J_te_inv stores 1 / J_hat(Z_i), we compute:
+  #   theta_hat = mean( beta1_hat + (X - m_hat) * (Y - mu_hat) * J_te_inv )
   # -----------------------
-  X_tilde <- Xv - m_hat
+  X_tilde  <- Xv - m_hat
   adj_term <- X_tilde * (Yv - mu_hat) * J_te_inv
 
   theta_hat <- mean(beta1_hat + adj_term)
@@ -284,7 +488,8 @@ gvcm <- function(
   IF <- (beta1_hat - theta_hat) + adj_term
   se_hat <- stats::sd(IF) / sqrt(n)
 
-  ci <- c(theta_hat - 1.96 * se_hat, theta_hat + 1.96 * se_hat)
+  ci <- c(theta_hat - 1.96 * se_hat,
+          theta_hat + 1.96 * se_hat)
 
   # -----------------------
   # 6) Return
@@ -295,6 +500,11 @@ gvcm <- function(
     ci        = ci,
     n         = n,
     K         = K,
-    link      = link
+    link      = link,
+    learner   = learner,
+    beta1_hat = beta1_hat,
+    m_hat     = m_hat,
+    mu_hat    = mu_hat,
+    J_inv_hat = J_te_inv
   )
 }

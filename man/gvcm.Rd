@@ -2,7 +2,7 @@
 % Please edit documentation in R/gvcm.R
 \name{gvcm}
 \alias{gvcm}
-\title{Generalized Varying Coefficient Model (GVCM) DML estimator (minimal paper version)}
+\title{Generalized Varying Coefficient Model (GVCM) DML estimator}
 \usage{
 gvcm(
   data,
@@ -10,67 +10,105 @@ gvcm(
   X,
   Z,
   link = c("gaussian", "binomial", "poisson"),
+  learner = c("sieve", "deepnet"),
   K = 5,
-  basis = c("ns", "poly", "none"),
-  df = NULL,
   standardize_Z = TRUE,
-  alpha = 0.5,
-  nfolds_glmnet = 5,
-  lambda_rule = c("lambda.min", "lambda.1se"),
   crossfit_seed = 1,
-  eps_J = 1e-08,
-  verbose = TRUE
+  eps_J = 1e-06,
+  sieve_args = list(basis = "ns", df = NULL, alpha = 1, nfolds_glmnet = 5, lambda_rule =
+    "lambda.min"),
+  net_args = list(hidden_dims = c(32), dropout = 0, n_residual = 1, lr = 5e-04, epochs =
+    200, batch_size = 32, weight_decay = 1e-04, valid_prop = 0.1, early_stop_patience =
+    15, min_delta = 1e-04, device = "cpu", seed = 1, verbose = FALSE)
 )
 }
 \arguments{
-\item{data}{data.frame}
+\item{data}{A \code{data.frame} containing the analysis variables.}
 
-\item{Y, X}{outcome/treatment: column name (character) or numeric vector}
+\item{Y}{Outcome variable, supplied either as a column name (character)
+in \code{data} or as a numeric vector of length \code{nrow(data)}.}
 
-\item{Z}{covariates: column names (character vector) or matrix/data.frame}
+\item{X}{Exposure/treatment variable, supplied either as a column name
+(character) in \code{data} or as a numeric vector of length \code{nrow(data)}.}
 
-\item{link}{one of c("gaussian","binomial","poisson")}
+\item{Z}{Covariates, supplied as a character vector of column names, or as
+a numeric matrix/data.frame with \code{nrow(data)} rows.}
 
-\item{K}{number of cross-fitting folds}
+\item{link}{One of \code{c("gaussian","binomial","poisson")}.}
 
-\item{basis}{Basis specification for Z. Can be:
+\item{learner}{Nuisance learner type. One of \code{c("sieve","deepnet")}.}
+
+\item{K}{Number of cross-fitting folds.}
+
+\item{standardize_Z}{Logical; if \code{TRUE}, raw \code{Z} is centered and
+scaled before basis expansion (for sieve) or before being passed into the
+deep network learner.}
+
+\item{crossfit_seed}{Random seed used to generate cross-fitting folds.}
+
+\item{eps_J}{Small positive constant used to lower-truncate the estimated
+inverse information term to avoid division by zero or numerically unstable
+values.}
+
+\item{sieve_args}{A named list of tuning parameters for the sieve learner.
+Supported components are:
 \itemize{
-\item \code{"ns"}: natural spline basis applied column-wise,
-\item \code{"poly"}: orthogonal polynomial basis applied column-wise,
-\item \code{"none"}: use raw Z directly,
-\item a formula, e.g. \code{~ Z1 + Z2 + Z1:Z2 + I(Z1^2)},
-\item a function that takes the processed Z matrix and returns a numeric basis matrix,
-\item or a precomputed numeric matrix/data.frame with the same number of rows as the analysis data.
-}
+\item \code{basis}: one of \code{"ns"}, \code{"poly"}, or \code{"none"},
+\item \code{df}: degrees of freedom for \code{"ns"} or \code{"poly"},
+\item \code{alpha}: elastic-net mixing parameter for \pkg{glmnet},
+\item \code{nfolds_glmnet}: internal folds for \code{cv.glmnet},
+\item \code{lambda_rule}: one of \code{"lambda.min"} or \code{"lambda.1se"}.
+}}
 
-Built-in options are convenient defaults. Custom specifications allow users
-to include interactions, nonlinear transforms, or other user-defined basis terms
-while leaving the rest of the estimation procedure unchanged.}
-
-\item{df}{Degrees of freedom for the spline basi. Default is 4.}
-
-\item{standardize_Z}{logical; center/scale raw Z before basis expansion}
-
-\item{alpha}{Elastic-net mixing parameter used in the \pkg{glmnet} nuisance regressions.
-Must be between 0 and 1. Defualt is 0.5.}
-
-\item{nfolds_glmnet}{internal folds for cv.glmnet}
-
-\item{lambda_rule}{c("lambda.min","lambda.1se")}
-
-\item{crossfit_seed}{seed for cross-fitting folds}
-
-\item{eps_J}{lower truncation for \eqn{\hat J(Z)} to avoid division by zero}
-
-\item{verbose}{logical}
+\item{net_args}{A named list of tuning parameters for the deep neural network
+learner. Supported components are:
+\itemize{
+\item \code{hidden_dims}: integer vector giving hidden-layer widths,
+\item \code{dropout}: dropout rate in \code{[0,1)},
+\item \code{n_residual}: number of residual blocks applied after the shared trunk,
+\item \code{lr}: learning rate for Adam,
+\item \code{epochs}: maximum number of training epochs,
+\item \code{batch_size}: mini-batch size,
+\item \code{weight_decay}: weight decay passed to Adam,
+\item \code{valid_prop}: proportion of the training fold used as a validation split,
+\item \code{early_stop_patience}: early stopping patience,
+\item \code{min_delta}: minimum validation improvement required to reset patience,
+\item \code{device}: computation device, typically \code{"cpu"} or \code{"cuda"},
+\item \code{seed}: random seed used inside network fitting,
+\item \code{verbose}: logical; if \code{TRUE}, training progress is printed.
+}}
 }
 \value{
-A list with \code{theta_hat}, \code{se_hat}, and \code{ci}.
+A list with components
+\itemize{
+\item \code{theta_hat}: estimated target parameter,
+\item \code{se_hat}: estimated standard error,
+\item \code{ci}: Wald-type 95\\% confidence interval,
+\item \code{n}: number of complete cases used,
+\item \code{K}: number of cross-fitting folds,
+\item \code{link}: link used,
+\item \code{learner}: nuisance learner used,
+\item \code{beta1_hat}: cross-fitted estimates of \eqn{\beta_1(Z_i)},
+\item \code{m_hat}: cross-fitted estimates of \eqn{E(X\mid Z_i)},
+\item \code{mu_hat}: cross-fitted estimates of \eqn{E(Y\mid X_i,Z_i)},
+\item \code{J_inv_hat}: cross-fitted estimates of \eqn{1/J(Z_i)},
+}
 }
 \description{
-Fits a generalized varying coefficient model under a canonical GLM link:
-\eqn{g(\mathbb{E}[Y \mid X, Z]) = \beta_0(Z) + \beta_1(Z)\,X}
-and estimates the target parameter
-\eqn{\theta = \mathbb{E}[\beta_1(Z)]}
-using cross-fitted Double Machine Learning (DML).
+Fits the model
+\deqn{g\{E(Y \mid X, Z)\} = \beta_0(Z) + \beta_1(Z) X}
+and targets
+\deqn{\theta = E\{\beta_1(Z)\}.}
+}
+\details{
+The estimator uses cross-fitting and an efficient influence function (EIF)
+with nuisance components estimated by either sieve-based learners or
+deep neural networks.
+
+Supported links are:
+\itemize{
+\item \code{"gaussian"} with identity link,
+\item \code{"binomial"} with logit link,
+\item \code{"poisson"} with log link.
+}
 }
