@@ -53,7 +53,7 @@ values.}
 \item{sieve_args}{A named list of tuning parameters for the sieve learner.
 Supported components are:
 \itemize{
-\item \code{basis}: one of \code{"ns"}, \code{"poly"}, or \code{"none"},
+\item \code{basis}: one of \code{"ns"}, \code{"poly"}, or \code{"none"}, or customized.
 \item \code{df}: degrees of freedom for \code{"ns"} or \code{"poly"},
 \item \code{alpha}: elastic-net mixing parameter for \pkg{glmnet},
 \item \code{nfolds_glmnet}: internal folds for \code{cv.glmnet},

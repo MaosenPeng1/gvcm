@@ -42,7 +42,7 @@ NULL
 #' @param sieve_args A named list of tuning parameters for the sieve learner.
 #'   Supported components are:
 #'   \itemize{
-#'     \item \code{basis}: one of \code{"ns"}, \code{"poly"}, or \code{"none"},
+#'     \item \code{basis}: one of \code{"ns"}, \code{"poly"}, or \code{"none"}, or customized.
 #'     \item \code{df}: degrees of freedom for \code{"ns"} or \code{"poly"},
 #'     \item \code{alpha}: elastic-net mixing parameter for \pkg{glmnet},
 #'     \item \code{nfolds_glmnet}: internal folds for \code{cv.glmnet},
@@ -168,7 +168,22 @@ gvcm <- function(
   # 0a) Validate sieve args
   # -----------------------
   if (learner == "sieve") {
-    sieve_args$basis <- match.arg(sieve_args$basis, c("ns","poly","none"))
+    # allow basis to be:
+    # "ns", "poly", "none", or a formula/function/matrix/data.frame
+    if (is.character(sieve_args$basis) && length(sieve_args$basis) == 1L) {
+      sieve_args$basis <- match.arg(sieve_args$basis, c("ns","poly","none"))
+    } else if (
+      !inherits(sieve_args$basis, "formula") &&
+      !is.function(sieve_args$basis) &&
+      !is.matrix(sieve_args$basis) &&
+      !is.data.frame(sieve_args$basis)
+    ) {
+      stop(
+        "sieve_args$basis must be one of 'ns', 'poly', 'none', ",
+        "or a formula, function, matrix, or data.frame."
+      )
+    }
+
     sieve_args$lambda_rule <- match.arg(
       sieve_args$lambda_rule,
       c("lambda.min","lambda.1se")
@@ -189,7 +204,7 @@ gvcm <- function(
       stop("sieve_args$nfolds_glmnet must be a single integer >= 2.")
     }
 
-    if (identical(sieve_args$basis, "ns")) {
+    if (is.character(sieve_args$basis) && identical(sieve_args$basis, "ns")) {
       if (!requireNamespace("splines", quietly = TRUE)) {
         stop("Package 'splines' is required for sieve_args$basis = 'ns'.")
       }
