@@ -409,7 +409,7 @@ gvcm <- function(
     beta1_hat_te <- beta_pred_te$beta1_hat
     mu_hat_te    <- .inv_link(eta_hat_te, link = link)
     if (link == "binomial") {
-      mu_hat_te <- pmin(pmax(mu_hat_te, 1e-3), 1 - 1e-3)
+      mu_hat_te <- pmin(pmax(mu_hat_te, 1e-2), 1 - 1e-2)
     }
 
     # -----------------------
