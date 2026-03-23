@@ -42,7 +42,8 @@ NULL
 #' @param sieve_args A named list of tuning parameters for the sieve learner.
 #'   Supported components are:
 #'   \itemize{
-#'     \item \code{basis}: one of \code{"ns"}, \code{"poly"}, or \code{"none"}, or customized.
+#'     \item \code{basis}: either one of \code{"ns"}, \code{"poly"}, \code{"none"},
+#'       or a custom basis supplied as a formula, function, matrix, or data.frame,
 #'     \item \code{df}: degrees of freedom for \code{"ns"} or \code{"poly"},
 #'     \item \code{alpha}: elastic-net mixing parameter for \pkg{glmnet},
 #'     \item \code{nfolds_glmnet}: internal folds for \code{cv.glmnet},
@@ -407,9 +408,9 @@ gvcm <- function(
     eta_hat_te   <- beta_pred_te$eta_hat
     beta1_hat_te <- beta_pred_te$beta1_hat
     mu_hat_te    <- .inv_link(eta_hat_te, link = link)
-    # if (link == "binomial") {
-    #   mu_hat_te <- pmin(pmax(mu_hat_te, 0.01), 0.99)
-    # }
+    if (link == "binomial") {
+      mu_hat_te <- pmin(pmax(mu_hat_te, 0.01), 0.99)
+    }
 
     # -----------------------
     # (b) Fit m(Z)=E[X|Z] on training
@@ -469,10 +470,6 @@ gvcm <- function(
     V_te <- .V_fun(mu_hat_te, link = link)
     J_inv_te_fold <- invar_te / V_te
     J_inv_te_fold <- pmax(J_inv_te_fold, eps_J)
-
-    # if (link == "binomial") {
-    #   mu_hat_te <- pmin(pmax(mu_hat_te, 0.01), 0.99)
-    # }
 
     # -----------------------
     # store fold-specific predictions
