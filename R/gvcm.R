@@ -406,6 +406,10 @@ gvcm <- function(
     )
 
     eta_hat_te   <- beta_pred_te$eta_hat
+    if (link == "poisson") {
+      eta_hat_te <- pmin(pmax(eta_hat_te, -6), 6)
+    }
+
     beta1_hat_te <- beta_pred_te$beta1_hat
     mu_hat_te    <- .inv_link(eta_hat_te, link = link)
     if (link == "binomial") {
