@@ -66,6 +66,21 @@ NULL
 #'     \item \code{seed}: random seed used inside network fitting,
 #'     \item \code{verbose}: logical; if \code{TRUE}, training progress is printed.
 #'   }
+#' @param beta_net_args Optional named list of deepnet tuning overrides used
+#'   only for the beta-network nuisance learner. These are merged on top of
+#'   \code{net_args}. Useful components include:
+#'   \itemize{
+#'     \item \code{activation}: e.g. \code{"silu"}, \code{"relu"}, \code{"gelu"}, \code{"tanh"},
+#'     \item \code{lambda_beta1}: nonnegative penalty weight applied to the
+#'       slope head \eqn{\beta_1(Z)} during beta-network training,
+#'     \item any other components supported in \code{net_args}.
+#'   }
+#' @param m_net_args Optional named list of deepnet tuning overrides used only
+#'   for the \eqn{m(Z)=E(X\mid Z)} nuisance learner. These are merged on top of
+#'   \code{net_args}.
+#' @param invar_net_args Optional named list of deepnet tuning overrides used
+#'   only for the inverse-information nuisance learner. These are merged on top
+#'   of \code{net_args}.
 #'
 #' @return A list with components
 #' \itemize{
@@ -102,6 +117,7 @@ gvcm <- function(
       hidden_dims = c(32),
       dropout = 0,
       n_residual = 1,
+      activation = "silu",
       lr = 5e-4,
       epochs = 200,
       batch_size = 32,
@@ -112,7 +128,12 @@ gvcm <- function(
       device = "cpu",
       seed = 1,
       verbose = FALSE
-    )
+    ),
+    beta_net_args = list(
+      lambda_beta1 = 1e-4
+    ),
+    m_net_args = list(),
+    invar_net_args = list()
 )
 {
   # -----------------------
@@ -150,6 +171,7 @@ gvcm <- function(
     hidden_dims = c(32),
     dropout = 0,
     n_residual = 1,
+    activation = "silu",
     lr = 5e-4,
     epochs = 200,
     batch_size = 32,
@@ -164,6 +186,16 @@ gvcm <- function(
 
   sieve_args <- .fill_defaults(sieve_defaults, sieve_args)
   net_args   <- .fill_defaults(net_defaults, net_args)
+  if (learner == "deepnet") {
+    beta_net_args  <- .fill_defaults(net_args, beta_net_args)
+    m_net_args     <- .fill_defaults(net_args, m_net_args)
+    invar_net_args <- .fill_defaults(net_args, invar_net_args)
+
+    # beta-only default if not supplied by user/global args
+    if (is.null(beta_net_args$lambda_beta1)) {
+      beta_net_args$lambda_beta1 <- 1e-4
+    }
+  }
 
   # -----------------------
   # 0a) Validate sieve args
@@ -261,6 +293,31 @@ gvcm <- function(
         net_args$n_residual < 0) {
       stop("net_args$n_residual must be a single nonnegative integer.")
     }
+    if (!is.character(net_args$activation) || length(net_args$activation) != 1L) {
+      stop("net_args$activation must be a single character string.")
+    }
+    net_args$activation <- match.arg(
+      net_args$activation,
+      c("silu", "relu", "gelu", "tanh")
+    )
+    beta_net_args$activation <- match.arg(
+      beta_net_args$activation,
+      c("silu", "relu", "gelu", "tanh")
+    )
+    m_net_args$activation <- match.arg(
+      m_net_args$activation,
+      c("silu", "relu", "gelu", "tanh")
+    )
+    invar_net_args$activation <- match.arg(
+      invar_net_args$activation,
+      c("silu", "relu", "gelu", "tanh")
+    )
+
+    if (!is.numeric(beta_net_args$lambda_beta1) ||
+        length(beta_net_args$lambda_beta1) != 1L ||
+        beta_net_args$lambda_beta1 < 0) {
+      stop("beta_net_args$lambda_beta1 must be a single nonnegative number.")
+    }
 
     if (!is.numeric(net_args$valid_prop) || length(net_args$valid_prop) != 1L ||
         net_args$valid_prop <= 0 || net_args$valid_prop >= 1) {
@@ -289,23 +346,6 @@ gvcm <- function(
     if (!is.logical(net_args$verbose) || length(net_args$verbose) != 1L) {
       stop("net_args$verbose must be TRUE or FALSE.")
     }
-  }
-
-  # convenient local aliases: deepnet
-  if (learner == "deepnet") {
-    hidden_dims          <- as.integer(net_args$hidden_dims)
-    dropout              <- net_args$dropout
-    n_residual           <- as.integer(net_args$n_residual)
-    lr                   <- net_args$lr
-    epochs               <- as.integer(net_args$epochs)
-    batch_size           <- as.integer(net_args$batch_size)
-    weight_decay         <- net_args$weight_decay
-    valid_prop           <- net_args$valid_prop
-    early_stop_patience  <- as.integer(net_args$early_stop_patience)
-    min_delta            <- net_args$min_delta
-    device               <- net_args$device
-    seed                 <- net_args$seed
-    verbose              <- net_args$verbose
   }
 
   # -----------------------
@@ -394,7 +434,7 @@ gvcm <- function(
       Y_tr       = Y_tr,
       link       = link,
       sieve_args = sieve_args,
-      net_args   = net_args
+      net_args   = beta_net_args
     )
 
     beta_pred_te <- .predict_beta_model(
@@ -425,7 +465,7 @@ gvcm <- function(
       Z_tr       = Z_tr,
       X_tr       = X_tr,
       sieve_args = sieve_args,
-      net_args   = net_args
+      net_args   = m_net_args
     )
 
     m_hat_tr <- .predict_m_model(
@@ -461,7 +501,7 @@ gvcm <- function(
       Y_tr       = Y_tr_inv,
       weights    = wt_tr,
       sieve_args = sieve_args,
-      net_args   = net_args
+      net_args   = invar_net_args
     )
 
     invar_te <- .predict_invar_model(

@@ -47,6 +47,18 @@ NULL
   return(torch::torch_mean(mu - y * eta_safe))
 }
 
+#' @noRd
+.make_activation <- function(name = c("silu", "relu", "gelu", "tanh")) {
+  name <- match.arg(name)
+  switch(
+    name,
+    silu = torch::nn_silu(),
+    relu = torch::nn_relu(),
+    gelu = torch::nn_gelu(),
+    tanh = torch::nn_tanh()
+  )
+}
+
 # ============================================================
 # Residual block for MLP trunk
 # ============================================================
@@ -55,11 +67,11 @@ NULL
 ResidualBlock <- torch::nn_module(
   "ResidualBlock",
 
-  initialize = function(dim, dropout = 0) {
+  initialize = function(dim, dropout = 0, activation = "silu") {
     self$fc1 <- torch::nn_linear(dim, dim)
     self$fc2 <- torch::nn_linear(dim, dim)
     self$drop <- torch::nn_dropout(p = dropout)
-    self$act <- torch::nn_relu()
+    self$act <- .make_activation(activation)
   },
 
   forward = function(x) {
@@ -73,7 +85,6 @@ ResidualBlock <- torch::nn_module(
     out
   }
 )
-
 # ============================================================
 # Two-head beta network
 # shared trunk -> beta0(z), beta1(z)
@@ -87,15 +98,15 @@ BetaTwoHeadNet <- torch::nn_module(
     p,
     hidden_dims = c(32),
     dropout = 0,
-    n_residual = 1
+    n_residual = 1,
+    activation = "silu"
   ) {
     stopifnot(length(hidden_dims) >= 1)
 
     self$input_layer <- torch::nn_linear(p, hidden_dims[1])
-    self$act <- torch::nn_relu()
+    self$act <- .make_activation(activation)
     self$drop <- torch::nn_dropout(p = dropout)
 
-    # hidden transitions
     self$hidden_layers <- torch::nn_module_list()
     if (length(hidden_dims) >= 2) {
       for (j in 2:length(hidden_dims)) {
@@ -105,16 +116,18 @@ BetaTwoHeadNet <- torch::nn_module(
       }
     }
 
-    # residual blocks on final hidden dimension
     self$res_blocks <- torch::nn_module_list()
     last_dim <- hidden_dims[length(hidden_dims)]
     for (j in seq_len(n_residual)) {
       self$res_blocks$append(
-        ResidualBlock(dim = last_dim, dropout = dropout)
+        ResidualBlock(
+          dim = last_dim,
+          dropout = dropout,
+          activation = activation
+        )
       )
     }
 
-    # two scalar heads
     self$head_beta0 <- torch::nn_linear(last_dim, 1)
     self$head_beta1 <- torch::nn_linear(last_dim, 1)
   },
@@ -126,8 +139,7 @@ BetaTwoHeadNet <- torch::nn_module(
 
     if (length(self$hidden_layers) > 0) {
       for (j in seq_len(length(self$hidden_layers))) {
-        layer <- self$hidden_layers[[j]]
-        h <- layer(h)
+        h <- self$hidden_layers[[j]](h)
         h <- self$act(h)
         h <- self$drop(h)
       }
@@ -135,26 +147,18 @@ BetaTwoHeadNet <- torch::nn_module(
 
     if (length(self$res_blocks) > 0) {
       for (j in seq_len(length(self$res_blocks))) {
-        block <- self$res_blocks[[j]]
-        h <- block(h)
+        h <- self$res_blocks[[j]](h)
       }
     }
 
-    beta0 <- self$head_beta0(h)$squeeze(2)
-    beta1 <- self$head_beta1(h)$squeeze(2)
-
     list(
-      beta0 = beta0,
-      beta1 = beta1
+      beta0 = self$head_beta0(h),
+      beta1 = self$head_beta1(h)
     )
   }
 )
 
 #' @noRd
-# ============================================================
-# Fit beta deepnet
-# ============================================================
-
 .fit_beta_deepnet <- function(
     Z_tr,
     X_tr,
@@ -168,15 +172,16 @@ BetaTwoHeadNet <- torch::nn_module(
 
   link <- match.arg(link, c("gaussian","binomial","poisson"))
 
-  # defaults
   defaults <- list(
     hidden_dims = c(32),
     dropout = 0,
     n_residual = 1,
+    activation = "silu",
     lr = 5e-4,
     epochs = 200,
     batch_size = 32,
     weight_decay = 1e-4,
+    lambda_beta1 = 1e-4,
     valid_prop = 0.1,
     early_stop_patience = 15,
     min_delta = 1e-4,
@@ -187,7 +192,6 @@ BetaTwoHeadNet <- torch::nn_module(
 
   net_args <- utils::modifyList(defaults, net_args)
 
-  # prepare data
   Z_tr <- .as_matrix_float(Z_tr)
   X_tr <- as.numeric(X_tr)
   Y_tr <- as.numeric(Y_tr)
@@ -204,38 +208,56 @@ BetaTwoHeadNet <- torch::nn_module(
 
   device <- .get_device(net_args$device)
 
-  # train/validation split
   n_valid <- max(1L, floor(net_args$valid_prop * n))
   idx_all <- sample.int(n)
   idx_valid <- idx_all[seq_len(n_valid)]
   idx_train <- idx_all[-seq_len(n_valid)]
 
-  z_train <- torch::torch_tensor(Z_tr[idx_train, , drop = FALSE],
-                                 dtype = torch::torch_float(),
-                                 device = device)
-  x_train <- torch::torch_tensor(matrix(X_tr[idx_train], ncol = 1),
-                                 dtype = torch::torch_float(),
-                                 device = device)
-  y_train <- torch::torch_tensor(matrix(Y_tr[idx_train], ncol = 1),
-                                 dtype = torch::torch_float(),
-                                 device = device)
+  # standardize X using training split only
+  x_center <- mean(X_tr[idx_train])
+  x_scale  <- stats::sd(X_tr[idx_train])
+  if (!is.finite(x_scale) || x_scale <= 0) x_scale <- 1
 
-  z_valid <- torch::torch_tensor(Z_tr[idx_valid, , drop = FALSE],
-                                 dtype = torch::torch_float(),
-                                 device = device)
-  x_valid <- torch::torch_tensor(matrix(X_tr[idx_valid], ncol = 1),
-                                 dtype = torch::torch_float(),
-                                 device = device)
-  y_valid <- torch::torch_tensor(matrix(Y_tr[idx_valid], ncol = 1),
-                                 dtype = torch::torch_float(),
-                                 device = device)
+  X_tr_std <- (X_tr - x_center) / x_scale
 
-  # model
+  z_train <- torch::torch_tensor(
+    Z_tr[idx_train, , drop = FALSE],
+    dtype = torch::torch_float(),
+    device = device
+  )
+  x_train <- torch::torch_tensor(
+    matrix(X_tr_std[idx_train], ncol = 1),
+    dtype = torch::torch_float(),
+    device = device
+  )
+  y_train <- torch::torch_tensor(
+    matrix(Y_tr[idx_train], ncol = 1),
+    dtype = torch::torch_float(),
+    device = device
+  )
+
+  z_valid <- torch::torch_tensor(
+    Z_tr[idx_valid, , drop = FALSE],
+    dtype = torch::torch_float(),
+    device = device
+  )
+  x_valid <- torch::torch_tensor(
+    matrix(X_tr_std[idx_valid], ncol = 1),
+    dtype = torch::torch_float(),
+    device = device
+  )
+  y_valid <- torch::torch_tensor(
+    matrix(Y_tr[idx_valid], ncol = 1),
+    dtype = torch::torch_float(),
+    device = device
+  )
+
   model <- BetaTwoHeadNet(
     p = p,
     hidden_dims = net_args$hidden_dims,
     dropout = net_args$dropout,
-    n_residual = net_args$n_residual
+    n_residual = net_args$n_residual,
+    activation = net_args$activation
   )
   model$to(device = device)
 
@@ -271,16 +293,19 @@ BetaTwoHeadNet <- torch::nn_module(
       optimizer$zero_grad()
 
       out <- model(zb)
-      beta0_b <- out$beta0$unsqueeze(2)
-      beta1_b <- out$beta1$unsqueeze(2)
+      beta0_b <- out$beta0
+      beta1_b <- out$beta1
 
       eta_b <- beta0_b + beta1_b * xb
 
-      loss <- .beta_loss_from_eta(
+      loss_outcome <- .beta_loss_from_eta(
         eta = eta_b,
         y = yb,
         link = link
       )
+
+      penalty_beta1 <- net_args$lambda_beta1 * torch::torch_mean(beta1_b^2)
+      loss <- loss_outcome + penalty_beta1
 
       loss$backward()
       torch::nn_utils_clip_grad_norm_(model$parameters, max_norm = 5)
@@ -289,19 +314,21 @@ BetaTwoHeadNet <- torch::nn_module(
       epoch_loss <- epoch_loss + loss$item()
     }
 
-    # validation
     model$eval()
     torch::with_no_grad({
       out_val <- model(z_valid)
-      beta0_val <- out_val$beta0$unsqueeze(2)
-      beta1_val <- out_val$beta1$unsqueeze(2)
+      beta0_val <- out_val$beta0
+      beta1_val <- out_val$beta1
       eta_val <- beta0_val + beta1_val * x_valid
 
-      valid_loss <- .beta_loss_from_eta(
+      valid_outcome <- .beta_loss_from_eta(
         eta = eta_val,
         y = y_valid,
         link = link
-      )$item()
+      )
+
+      valid_penalty <- net_args$lambda_beta1 * torch::torch_mean(beta1_val^2)
+      valid_loss <- (valid_outcome + valid_penalty)$item()
     })
 
     if (isTRUE(net_args$verbose)) {
@@ -338,7 +365,9 @@ BetaTwoHeadNet <- torch::nn_module(
     device = device,
     link = link,
     net_args = net_args,
-    p = p
+    p = p,
+    x_center = x_center,
+    x_scale = x_scale
   )
 }
 
@@ -365,19 +394,18 @@ BetaTwoHeadNet <- torch::nn_module(
     dtype = torch::torch_float(),
     device = fit$device
   )
-  x_te <- torch::torch_tensor(
-    matrix(X_te, ncol = 1),
-    dtype = torch::torch_float(),
-    device = fit$device
-  )
 
   fit$model$eval()
 
   out <- torch::with_no_grad({
     head_out <- fit$model(z_te)
 
-    beta0 <- as.numeric(head_out$beta0$to(device = torch::torch_device("cpu")))
-    beta1 <- as.numeric(head_out$beta1$to(device = torch::torch_device("cpu")))
+    beta0_std <- as.numeric(head_out$beta0$to(device = torch::torch_device("cpu")))
+    beta1_std <- as.numeric(head_out$beta1$to(device = torch::torch_device("cpu")))
+
+    # back-transform to original X scale
+    beta1 <- beta1_std / fit$x_scale
+    beta0 <- beta0_std - beta1_std * fit$x_center / fit$x_scale
 
     eta <- beta0 + beta1 * X_te
 
@@ -403,12 +431,13 @@ MRegressionNet <- torch::nn_module(
     p,
     hidden_dims = c(32),
     dropout = 0,
-    n_residual = 1
+    n_residual = 1,
+    activation = "silu"
   ) {
     stopifnot(length(hidden_dims) >= 1)
 
     self$input_layer <- torch::nn_linear(p, hidden_dims[1])
-    self$act <- torch::nn_relu()
+    self$act <- .make_activation(activation)
     self$drop <- torch::nn_dropout(p = dropout)
 
     self$hidden_layers <- torch::nn_module_list()
@@ -425,7 +454,11 @@ MRegressionNet <- torch::nn_module(
     self$res_blocks <- torch::nn_module_list()
     for (j in seq_len(n_residual)) {
       self$res_blocks$append(
-        ResidualBlock(dim = last_dim, dropout = dropout)
+        ResidualBlock(
+          dim = last_dim,
+          dropout = dropout,
+          activation = activation
+        )
       )
     }
 
@@ -439,8 +472,7 @@ MRegressionNet <- torch::nn_module(
 
     if (length(self$hidden_layers) > 0) {
       for (j in seq_len(length(self$hidden_layers))) {
-        layer <- self$hidden_layers[[j]]
-        h <- layer(h)
+        h <- self$hidden_layers[[j]](h)
         h <- self$act(h)
         h <- self$drop(h)
       }
@@ -448,13 +480,11 @@ MRegressionNet <- torch::nn_module(
 
     if (length(self$res_blocks) > 0) {
       for (j in seq_len(length(self$res_blocks))) {
-        block <- self$res_blocks[[j]]
-        h <- block(h)
+        h <- self$res_blocks[[j]](h)
       }
     }
 
-    m_hat <- self$head_m(h)$squeeze(2)
-    m_hat
+    self$head_m(h)
   }
 )
 
@@ -476,6 +506,7 @@ MRegressionNet <- torch::nn_module(
     hidden_dims = c(32),
     dropout = 0,
     n_residual = 1,
+    activation = "silu",
     lr = 5e-4,
     epochs = 200,
     batch_size = 32,
@@ -505,7 +536,6 @@ MRegressionNet <- torch::nn_module(
 
   device <- .get_device(net_args$device)
 
-  # train/validation split
   n_valid <- max(1L, floor(net_args$valid_prop * n))
   idx_all <- sample.int(n)
   idx_valid <- idx_all[seq_len(n_valid)]
@@ -537,7 +567,8 @@ MRegressionNet <- torch::nn_module(
     p = p,
     hidden_dims = net_args$hidden_dims,
     dropout = net_args$dropout,
-    n_residual = net_args$n_residual
+    n_residual = net_args$n_residual,
+    activation = net_args$activation
   )
   model$to(device = device)
 
@@ -571,7 +602,7 @@ MRegressionNet <- torch::nn_module(
 
       optimizer$zero_grad()
 
-      pred_b <- model(zb)$unsqueeze(2)
+      pred_b <- model(zb)
       loss <- torch::nnf_mse_loss(pred_b, xb)
 
       loss$backward()
@@ -583,7 +614,7 @@ MRegressionNet <- torch::nn_module(
 
     model$eval()
     torch::with_no_grad({
-      pred_val <- model(z_valid)$unsqueeze(2)
+      pred_val <- model(z_valid)
       valid_loss <- torch::nnf_mse_loss(pred_val, x_valid)$item()
     })
 
@@ -663,12 +694,13 @@ InvarRegressionNet <- torch::nn_module(
     p,
     hidden_dims = c(32),
     dropout = 0,
-    n_residual = 1
+    n_residual = 1,
+    activation = "silu"
   ) {
     stopifnot(length(hidden_dims) >= 1)
 
     self$input_layer <- torch::nn_linear(p, hidden_dims[1])
-    self$act <- torch::nn_relu()
+    self$act <- .make_activation(activation)
     self$drop <- torch::nn_dropout(p = dropout)
 
     self$hidden_layers <- torch::nn_module_list()
@@ -685,7 +717,11 @@ InvarRegressionNet <- torch::nn_module(
     self$res_blocks <- torch::nn_module_list()
     for (j in seq_len(n_residual)) {
       self$res_blocks$append(
-        ResidualBlock(dim = last_dim, dropout = dropout)
+        ResidualBlock(
+          dim = last_dim,
+          dropout = dropout,
+          activation = activation
+        )
       )
     }
 
@@ -699,8 +735,7 @@ InvarRegressionNet <- torch::nn_module(
 
     if (length(self$hidden_layers) > 0) {
       for (j in seq_len(length(self$hidden_layers))) {
-        layer <- self$hidden_layers[[j]]
-        h <- layer(h)
+        h <- self$hidden_layers[[j]](h)
         h <- self$act(h)
         h <- self$drop(h)
       }
@@ -708,13 +743,11 @@ InvarRegressionNet <- torch::nn_module(
 
     if (length(self$res_blocks) > 0) {
       for (j in seq_len(length(self$res_blocks))) {
-        block <- self$res_blocks[[j]]
-        h <- block(h)
+        h <- self$res_blocks[[j]](h)
       }
     }
 
-    out <- self$head_out(h)$squeeze(2)
-    out
+    self$head_out(h)
   }
 )
 
@@ -746,6 +779,7 @@ InvarRegressionNet <- torch::nn_module(
     hidden_dims = c(32),
     dropout = 0,
     n_residual = 1,
+    activation = "silu",
     lr = 5e-4,
     epochs = 200,
     batch_size = 32,
@@ -784,7 +818,6 @@ InvarRegressionNet <- torch::nn_module(
 
   device <- .get_device(net_args$device)
 
-  # train/validation split
   n_valid <- max(1L, floor(net_args$valid_prop * n))
   idx_all <- sample.int(n)
   idx_valid <- idx_all[seq_len(n_valid)]
@@ -826,7 +859,8 @@ InvarRegressionNet <- torch::nn_module(
     p = p,
     hidden_dims = net_args$hidden_dims,
     dropout = net_args$dropout,
-    n_residual = net_args$n_residual
+    n_residual = net_args$n_residual,
+    activation = net_args$activation
   )
   model$to(device = device)
 
@@ -861,7 +895,7 @@ InvarRegressionNet <- torch::nn_module(
 
       optimizer$zero_grad()
 
-      pred_b <- model(zb)$unsqueeze(2)
+      pred_b <- model(zb)
       loss <- .weighted_mse_loss(
         pred = pred_b,
         target = yb,
@@ -877,7 +911,7 @@ InvarRegressionNet <- torch::nn_module(
 
     model$eval()
     torch::with_no_grad({
-      pred_val <- model(z_valid)$unsqueeze(2)
+      pred_val <- model(z_valid)
       valid_loss <- .weighted_mse_loss(
         pred = pred_val,
         target = y_valid,
