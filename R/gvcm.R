@@ -114,16 +114,16 @@ gvcm <- function(
       lambda_rule = "lambda.min"
     ),
     net_args = list(
-      hidden_dims = c(32),
+      hidden_dims = c(64,32),
       dropout = 0,
       n_residual = 1,
       activation = "silu",
       lr = 5e-4,
-      epochs = 200,
-      batch_size = 32,
+      epochs = 400,
+      batch_size = 64,
       weight_decay = 1e-4,
-      valid_prop = 0.1,
-      early_stop_patience = 15,
+      valid_prop = 0.15,
+      early_stop_patience = 20,
       min_delta = 1e-4,
       device = "cpu",
       seed = 1,
@@ -186,6 +186,9 @@ gvcm <- function(
 
   sieve_args <- .fill_defaults(sieve_defaults, sieve_args)
   net_args   <- .fill_defaults(net_defaults, net_args)
+  if (!is.numeric(eps_J) || length(eps_J) != 1L || eps_J <= 0) {
+    stop("eps_J must be a single positive number.")
+  }
   if (learner == "deepnet") {
     beta_net_args  <- .fill_defaults(net_args, beta_net_args)
     m_net_args     <- .fill_defaults(net_args, m_net_args)
@@ -358,6 +361,8 @@ gvcm <- function(
   Zv <- .as_Z(Z, data, n0)
 
   keep <- stats::complete.cases(cbind(Yv, Xv, Zv))
+  finite_keep <- is.finite(Yv) & is.finite(Xv) & rowSums(!is.finite(Zv)) == 0
+  keep <- keep & finite_keep
   Yv <- Yv[keep]
   Xv <- Xv[keep]
   Zv <- Zv[keep, , drop = FALSE]

@@ -192,9 +192,20 @@ BetaTwoHeadNet <- torch::nn_module(
 
   net_args <- utils::modifyList(defaults, net_args)
 
+  if (!is.matrix(Z_tr) || !is.numeric(Z_tr)) {
+    stop("Z_tr must be a numeric matrix.")
+  }
+  if (!is.numeric(X_tr) || !is.numeric(Y_tr)) {
+    stop("X_tr and Y_tr must be numeric vectors.")
+  }
+
   Z_tr <- .as_matrix_float(Z_tr)
   X_tr <- as.numeric(X_tr)
   Y_tr <- as.numeric(Y_tr)
+
+  if (any(!is.finite(Z_tr)) || any(!is.finite(X_tr)) || any(!is.finite(Y_tr))) {
+    stop("Z_tr, X_tr, and Y_tr must be finite.")
+  }
 
   n <- nrow(Z_tr)
   p <- ncol(Z_tr)
@@ -212,6 +223,9 @@ BetaTwoHeadNet <- torch::nn_module(
   idx_all <- sample.int(n)
   idx_valid <- idx_all[seq_len(n_valid)]
   idx_train <- idx_all[-seq_len(n_valid)]
+  if (length(idx_train) == 0L) {
+    stop("Empty training split for beta deepnet; reduce valid_prop or increase sample size.")
+  }
 
   # standardize X using training split only
   x_center <- mean(X_tr[idx_train])
@@ -221,7 +235,7 @@ BetaTwoHeadNet <- torch::nn_module(
   X_tr_std <- (X_tr - x_center) / x_scale
 
   z_train <- torch::torch_tensor(
-    Z_tr[idx_train, , drop = FALSE],
+    Z_tr[idx_train, ],
     dtype = torch::torch_float(),
     device = device
   )
@@ -237,7 +251,7 @@ BetaTwoHeadNet <- torch::nn_module(
   )
 
   z_valid <- torch::torch_tensor(
-    Z_tr[idx_valid, , drop = FALSE],
+    Z_tr[idx_valid, ],
     dtype = torch::torch_float(),
     device = device
   )
@@ -286,9 +300,9 @@ BetaTwoHeadNet <- torch::nn_module(
       b_end <- min(b + batch_size - 1L, n_train)
       idx_b <- batch_order[b:b_end]
 
-      zb <- z_train[idx_b, , drop = FALSE]
-      xb <- x_train[idx_b, , drop = FALSE]
-      yb <- y_train[idx_b, , drop = FALSE]
+      zb <- z_train[idx_b, ]
+      xb <- x_train[idx_b, ]
+      yb <- y_train[idx_b, ]
 
       optimizer$zero_grad()
 
@@ -387,6 +401,9 @@ BetaTwoHeadNet <- torch::nn_module(
 
   if (nrow(Z_te) != length(X_te)) {
     stop("Z_te and X_te must have compatible lengths.")
+  }
+  if (any(!is.finite(Z_te)) || any(!is.finite(X_te))) {
+    stop("Z_te and X_te must be finite.")
   }
 
   z_te <- torch::torch_tensor(
@@ -521,8 +538,19 @@ MRegressionNet <- torch::nn_module(
 
   net_args <- utils::modifyList(defaults, net_args)
 
+  if (!is.matrix(Z_tr) || !is.numeric(Z_tr)) {
+    stop("Z_tr must be a numeric matrix.")
+  }
+  if (!is.numeric(X_tr)) {
+    stop("X_tr must be a numeric vector.")
+  }
+
   Z_tr <- .as_matrix_float(Z_tr)
   X_tr <- as.numeric(X_tr)
+
+  if (any(!is.finite(Z_tr)) || any(!is.finite(X_tr))) {
+    stop("Z_tr and X_tr must be finite.")
+  }
 
   n <- nrow(Z_tr)
   p <- ncol(Z_tr)
@@ -540,9 +568,12 @@ MRegressionNet <- torch::nn_module(
   idx_all <- sample.int(n)
   idx_valid <- idx_all[seq_len(n_valid)]
   idx_train <- idx_all[-seq_len(n_valid)]
+  if (length(idx_train) == 0L) {
+    stop("Empty training split for m deepnet; reduce valid_prop or increase sample size.")
+  }
 
   z_train <- torch::torch_tensor(
-    Z_tr[idx_train, , drop = FALSE],
+    Z_tr[idx_train, ],
     dtype = torch::torch_float(),
     device = device
   )
@@ -553,7 +584,7 @@ MRegressionNet <- torch::nn_module(
   )
 
   z_valid <- torch::torch_tensor(
-    Z_tr[idx_valid, , drop = FALSE],
+    Z_tr[idx_valid, ],
     dtype = torch::torch_float(),
     device = device
   )
@@ -597,8 +628,8 @@ MRegressionNet <- torch::nn_module(
       b_end <- min(b + batch_size - 1L, n_train)
       idx_b <- batch_order[b:b_end]
 
-      zb <- z_train[idx_b, , drop = FALSE]
-      xb <- x_train[idx_b, , drop = FALSE]
+      zb <- z_train[idx_b, ]
+      xb <- x_train[idx_b, ]
 
       optimizer$zero_grad()
 
@@ -664,7 +695,13 @@ MRegressionNet <- torch::nn_module(
     fit,
     Z_te
 ) {
+  if (!is.matrix(Z_te) || !is.numeric(Z_te)) {
+    stop("Z_te must be a numeric matrix.")
+  }
   Z_te <- .as_matrix_float(Z_te)
+  if (any(!is.finite(Z_te))) {
+    stop("Z_te must be finite.")
+  }
 
   z_te <- torch::torch_tensor(
     Z_te,
@@ -794,9 +831,20 @@ InvarRegressionNet <- torch::nn_module(
 
   net_args <- utils::modifyList(defaults, net_args)
 
+  if (!is.matrix(Z_tr) || !is.numeric(Z_tr)) {
+    stop("Z_tr must be a numeric matrix.")
+  }
+  if (!is.numeric(Y_tr) || !is.numeric(weights)) {
+    stop("Y_tr and weights must be numeric vectors.")
+  }
+
   Z_tr <- .as_matrix_float(Z_tr)
   Y_tr <- as.numeric(Y_tr)
   weights <- as.numeric(weights)
+
+  if (any(!is.finite(Z_tr)) || any(!is.finite(Y_tr)) || any(!is.finite(weights))) {
+    stop("Z_tr, Y_tr, and weights must be finite.")
+  }
 
   n <- nrow(Z_tr)
   p <- ncol(Z_tr)
@@ -822,9 +870,12 @@ InvarRegressionNet <- torch::nn_module(
   idx_all <- sample.int(n)
   idx_valid <- idx_all[seq_len(n_valid)]
   idx_train <- idx_all[-seq_len(n_valid)]
+  if (length(idx_train) == 0L) {
+    stop("Empty training split for invar deepnet; reduce valid_prop or increase sample size.")
+  }
 
   z_train <- torch::torch_tensor(
-    Z_tr[idx_train, , drop = FALSE],
+    Z_tr[idx_train, ],
     dtype = torch::torch_float(),
     device = device
   )
@@ -840,7 +891,7 @@ InvarRegressionNet <- torch::nn_module(
   )
 
   z_valid <- torch::torch_tensor(
-    Z_tr[idx_valid, , drop = FALSE],
+    Z_tr[idx_valid, ],
     dtype = torch::torch_float(),
     device = device
   )
@@ -889,9 +940,9 @@ InvarRegressionNet <- torch::nn_module(
       b_end <- min(b + batch_size - 1L, n_train)
       idx_b <- batch_order[b:b_end]
 
-      zb <- z_train[idx_b, , drop = FALSE]
-      yb <- y_train[idx_b, , drop = FALSE]
-      wb <- w_train[idx_b, , drop = FALSE]
+      zb <- z_train[idx_b, ]
+      yb <- y_train[idx_b, ]
+      wb <- w_train[idx_b, ]
 
       optimizer$zero_grad()
 
@@ -966,7 +1017,13 @@ InvarRegressionNet <- torch::nn_module(
     fit,
     Z_te
 ) {
+  if (!is.matrix(Z_te) || !is.numeric(Z_te)) {
+    stop("Z_te must be a numeric matrix.")
+  }
   Z_te <- .as_matrix_float(Z_te)
+  if (any(!is.finite(Z_te))) {
+    stop("Z_te must be finite.")
+  }
 
   z_te <- torch::torch_tensor(
     Z_te,

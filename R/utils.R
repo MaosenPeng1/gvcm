@@ -8,7 +8,13 @@ NULL
 
 #' @noRd
 .as_vec <- function(v, data, n) {
-  if (is.character(v) && length(v) == 1L) return(as.numeric(data[[v]]))
+  if (is.character(v) && length(v) == 1L) {
+    if (!v %in% names(data)) stop("Column '", v, "' not found in data.")
+    val <- data[[v]]
+    if (is.factor(val)) stop("Column '", v, "' must be numeric, not factor.")
+    if (!is.numeric(val)) stop("Column '", v, "' must be numeric.")
+    return(as.numeric(val))
+  }
   if (is.numeric(v) && length(v) == n) return(as.numeric(v))
   stop("Argument must be a column name (character) or numeric vector of length n.")
 }
@@ -16,11 +22,28 @@ NULL
 #' @noRd
 .as_Z <- function(Z, data, n) {
   if (is.character(Z)) {
+    if (!all(Z %in% names(data))) {
+      stop("Some Z columns not found in data.")
+    }
     Zm <- data[, Z, drop = FALSE]
+    if (!all(vapply(Zm, is.numeric, logical(1)))) {
+      stop("All Z columns must be numeric.")
+    }
+    if (nrow(Zm) != n) stop("Z must have n rows.")
     return(as.matrix(Zm))
   }
-  if (is.data.frame(Z)) return(as.matrix(Z))
-  if (is.matrix(Z)) return(Z)
+  if (is.data.frame(Z)) {
+    if (!all(vapply(Z, is.numeric, logical(1)))) {
+      stop("All columns of Z data.frame must be numeric.")
+    }
+    if (nrow(Z) != n) stop("Z must have n rows.")
+    return(as.matrix(Z))
+  }
+  if (is.matrix(Z)) {
+    if (!is.numeric(Z)) stop("Z matrix must be numeric.")
+    if (nrow(Z) != n) stop("Z must have n rows.")
+    return(Z)
+  }
   stop("Z must be column names, a data.frame, or a matrix.")
 }
 
@@ -39,6 +62,7 @@ NULL
 #' @noRd
 .make_basis <- function(Zmat, basis = "ns", df = 4) {
   if (!is.matrix(Zmat)) Zmat <- as.matrix(Zmat)
+  if (!is.numeric(Zmat)) stop("Z matrix must be numeric.")
   n <- nrow(Zmat)
   p <- ncol(Zmat)
 
@@ -59,10 +83,19 @@ NULL
     }
 
     if (basis == "poly") {
+      if (!is.numeric(df) || length(df) != 1L || df < 1) {
+        stop("df must be a single positive integer for poly basis.")
+      }
       out_list <- vector("list", p)
       for (j in seq_len(p)) {
         zj <- Zmat[, j]
-        Bj <- stats::poly(zj, degree = df, raw = FALSE, simple = TRUE)
+        Bj <- tryCatch(
+          stats::poly(zj, degree = df, raw = FALSE, simple = TRUE),
+          error = function(e) stop(
+            "poly basis construction failed for ", colnames(Zmat)[j], ": ", e$message,
+            call. = FALSE
+          )
+        )
         Bj <- as.matrix(Bj)
         colnames(Bj) <- paste0(colnames(Zmat)[j], "_poly", seq_len(ncol(Bj)))
         out_list[[j]] <- Bj
@@ -71,13 +104,22 @@ NULL
     }
 
     if (basis == "ns") {
+      if (!is.numeric(df) || length(df) != 1L || df < 1) {
+        stop("df must be a single positive integer for ns basis.")
+      }
       if (!requireNamespace("splines", quietly = TRUE)) {
         stop("Package 'splines' is required for basis = 'ns'.")
       }
       out_list <- vector("list", p)
       for (j in seq_len(p)) {
         zj <- Zmat[, j]
-        Bj <- splines::ns(zj, df = df)
+        Bj <- tryCatch(
+          splines::ns(zj, df = df),
+          error = function(e) stop(
+            "ns basis construction failed for ", colnames(Zmat)[j], ": ", e$message,
+            call. = FALSE
+          )
+        )
         Bj <- as.matrix(Bj)
         colnames(Bj) <- paste0(colnames(Zmat)[j], "_ns", seq_len(ncol(Bj)))
         out_list[[j]] <- Bj
@@ -147,6 +189,15 @@ NULL
   }
 
   strata <- as.factor(strata)
+  if (length(strata) != n) stop("strata must have length n.")
+  tab <- table(strata)
+  if (any(tab < K)) {
+    warning(
+      "Some strata have fewer observations than K; falling back to unstratified folds."
+    )
+    return(sample(rep(seq_len(K), length.out = n)))
+  }
+
   foldid <- integer(n)
   # assign folds within each stratum to balance composition across folds
   for (lv in levels(strata)) {

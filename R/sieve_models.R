@@ -21,6 +21,14 @@ NULL
 
   family <- match.arg(family, c("gaussian","binomial","poisson"))
   lambda_rule <- match.arg(lambda_rule, c("lambda.min","lambda.1se"))
+  if (!is.matrix(x)) stop("x must be a matrix.")
+  n <- nrow(x)
+  if (!is.numeric(nfolds) || length(nfolds) != 1L || nfolds < 2) {
+    stop("nfolds must be a single integer >= 2.")
+  }
+  if (nfolds > n) {
+    stop("nfolds must be less than or equal to the number of observations.")
+  }
 
   args <- list(
     x = x,
@@ -33,6 +41,9 @@ NULL
   )
 
   if (!is.null(weights)) {
+    if (length(weights) != n) stop("weights must have the same length as y.")
+    if (any(!is.finite(weights))) stop("weights must be finite.")
+    if (any(weights < 0)) stop("weights must be nonnegative.")
     args$weights <- weights
   }
 
