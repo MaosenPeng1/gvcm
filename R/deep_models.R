@@ -235,7 +235,7 @@ BetaTwoHeadNet <- torch::nn_module(
   X_tr_std <- (X_tr - x_center) / x_scale
 
   z_train <- torch::torch_tensor(
-    Z_tr[idx_train, ],
+    Z_tr[idx_train, , drop = FALSE],
     dtype = torch::torch_float(),
     device = device
   )
@@ -573,7 +573,7 @@ MRegressionNet <- torch::nn_module(
   }
 
   z_train <- torch::torch_tensor(
-    Z_tr[idx_train, ],
+    Z_tr[idx_train, , drop = FALSE],
     dtype = torch::torch_float(),
     device = device
   )
@@ -875,7 +875,7 @@ InvarRegressionNet <- torch::nn_module(
   }
 
   z_train <- torch::torch_tensor(
-    Z_tr[idx_train, ],
+    Z_tr[idx_train, , drop = FALSE],
     dtype = torch::torch_float(),
     device = device
   )
