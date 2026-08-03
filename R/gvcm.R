@@ -36,9 +36,9 @@ NULL
 #'   scaled before basis expansion (for sieve) or before being passed into the
 #'   deep network learner.
 #' @param crossfit_seed Random seed used to generate cross-fitting folds.
-#' @param eps_J Small positive constant used to lower-truncate the estimated
-#'   inverse information term to avoid division by zero or numerically unstable
-#'   values.
+#' @param eps_J Small positive stabilization constant used when estimating and
+#'   lower-truncating the inverse canonical information \eqn{1/D(Z)}. The name
+#'   is retained for backward compatibility.
 #' @param sieve_args A named list of tuning parameters for the sieve learner.
 #'   Supported components are:
 #'   \itemize{
@@ -75,12 +75,14 @@ NULL
 #'       slope head \eqn{\beta_1(Z)} during beta-network training,
 #'     \item any other components supported in \code{net_args}.
 #'   }
-#' @param m_net_args Optional named list of deepnet tuning overrides used only
-#'   for the \eqn{m(Z)=E(X\mid Z)} nuisance learner. These are merged on top of
-#'   \code{net_args}.
 #' @param invar_net_args Optional named list of deepnet tuning overrides used
 #'   only for the inverse-information nuisance learner. These are merged on top
 #'   of \code{net_args}.
+#' @param r_net_args Optional named list of deepnet tuning overrides used only
+#'   for the information-weighted exposure nuisance
+#'   \deqn{r(Z)=\frac{E\{X V(\mu)\mid Z\}}{E\{V(\mu)\mid Z\}}.}
+#'   These are merged on top of \code{net_args}. For the Gaussian identity link,
+#'   this reduces to \eqn{E(X\mid Z)}.
 #'
 #' @return A list with components
 #' \itemize{
@@ -92,9 +94,11 @@ NULL
 #'   \item \code{link}: link used,
 #'   \item \code{learner}: nuisance learner used,
 #'   \item \code{beta1_hat}: cross-fitted estimates of \eqn{\beta_1(Z_i)},
-#'   \item \code{m_hat}: cross-fitted estimates of \eqn{E(X\mid Z_i)},
+#'   \item \code{r_hat}: cross-fitted estimates of the information-weighted
+#'     exposure regression \eqn{r(Z_i)},
 #'   \item \code{mu_hat}: cross-fitted estimates of \eqn{E(Y\mid X_i,Z_i)},
-#'   \item \code{J_inv_hat}: cross-fitted estimates of \eqn{1/J(Z_i)},
+#'   \item \code{D_inv_hat}: cross-fitted estimates of \eqn{1/D(Z_i)},\code{r_hat}
+#'    \code{J_inv_hat}: deprecated aliases for \code{D_inv_hat}.
 #' }
 #' @export
 gvcm <- function(
@@ -117,7 +121,7 @@ gvcm <- function(
       hidden_dims = c(64,32),
       dropout = 0,
       n_residual = 1,
-      activation = "silu",
+      activation = "tanh",
       lr = 5e-4,
       epochs = 400,
       batch_size = 64,
@@ -132,8 +136,8 @@ gvcm <- function(
     beta_net_args = list(
       lambda_beta1 = 1e-4
     ),
-    m_net_args = list(),
-    invar_net_args = list()
+    invar_net_args = list(),
+    r_net_args = NULL
 )
 {
   # -----------------------
@@ -168,15 +172,15 @@ gvcm <- function(
   )
 
   net_defaults <- list(
-    hidden_dims = c(32),
+    hidden_dims = c(64, 32),
     dropout = 0,
     n_residual = 1,
-    activation = "silu",
+    activation = "tanh",
     lr = 5e-4,
-    epochs = 200,
+    epochs = 400,
     batch_size = 32,
     weight_decay = 1e-4,
-    valid_prop = 0.1,
+    valid_prop = 0.15,
     early_stop_patience = 15,
     min_delta = 1e-4,
     device = "cpu",
@@ -186,12 +190,15 @@ gvcm <- function(
 
   sieve_args <- .fill_defaults(sieve_defaults, sieve_args)
   net_args   <- .fill_defaults(net_defaults, net_args)
+
+  if (is.null(r_net_args)) r_net_args <- list()
+
   if (!is.numeric(eps_J) || length(eps_J) != 1L || eps_J <= 0) {
     stop("eps_J must be a single positive number.")
   }
   if (learner == "deepnet") {
     beta_net_args  <- .fill_defaults(net_args, beta_net_args)
-    m_net_args     <- .fill_defaults(net_args, m_net_args)
+    r_net_args     <- .fill_defaults(net_args, r_net_args)
     invar_net_args <- .fill_defaults(net_args, invar_net_args)
 
     # beta-only default if not supplied by user/global args
@@ -307,8 +314,8 @@ gvcm <- function(
       beta_net_args$activation,
       c("silu", "relu", "gelu", "tanh")
     )
-    m_net_args$activation <- match.arg(
-      m_net_args$activation,
+    r_net_args$activation <- match.arg(
+      r_net_args$activation,
       c("silu", "relu", "gelu", "tanh")
     )
     invar_net_args$activation <- match.arg(
@@ -402,8 +409,8 @@ gvcm <- function(
   # Storage for cross-fitted predictions
   beta1_hat <- rep(NA_real_, n)
   mu_hat    <- rep(NA_real_, n)
-  m_hat     <- rep(NA_real_, n)
-  J_te_inv  <- rep(NA_real_, n)
+  r_hat     <- rep(NA_real_, n)
+  D_inv_hat <- rep(NA_real_, n)
 
   # -----------------------
   # 4) Cross-fitting loop
@@ -450,54 +457,65 @@ gvcm <- function(
       X_te    = X_te
     )
 
-    eta_hat_te   <- beta_pred_te$eta_hat
-    if (link == "poisson") {
-      eta_hat_te <- pmin(pmax(eta_hat_te, -6), 6)
-    }
+    # Training-fold fitted means determine the information weights used to
+    # estimate r(Z). No held-out outcomes enter this nuisance fit.
+    beta_pred_tr <- .predict_beta_model(
+      fit     = beta_obj,
+      learner = learner,
+      B_te    = B_tr,
+      Z_te    = Z_tr,
+      X_te    = X_tr
+    )
 
     beta1_hat_te <- beta_pred_te$beta1_hat
-    mu_hat_te    <- .inv_link(eta_hat_te, link = link)
-    if (link == "binomial") {
-      mu_hat_te <- pmin(pmax(mu_hat_te, 1e-2), 1 - 1e-2)
-    }
+    mu_hat_tr <- .mu_from_eta(beta_pred_tr$eta_hat, link = link)
+    mu_hat_te <- .mu_from_eta(beta_pred_te$eta_hat, link = link)
+    r_weights_tr <- .r_weights(mu_hat_tr, link = link)
 
     # -----------------------
-    # (b) Fit m(Z)=E[X|Z] on training
+    # (b) Fit the information-weighted r(Z) on training:
+    #     r(Z) = E[X V(mu) | Z] / E[V(mu) | Z].
+    #     For Gaussian identity only, this equals E[X | Z].
     # -----------------------
-    m_obj <- .fit_m_model(
+    r_obj <- .fit_r_model(
       learner    = learner,
       B_tr       = B_tr,
       Z_tr       = Z_tr,
       X_tr       = X_tr,
+      r_weights_tr = r_weights_tr,
       sieve_args = sieve_args,
-      net_args   = m_net_args
+      net_args   = r_net_args
     )
 
-    m_hat_tr <- .predict_m_model(
-      fit     = m_obj,
+    r_hat_tr <- .predict_r_model(
+      fit     = r_obj,
       learner = learner,
       B_te    = B_tr,
       Z_te    = Z_tr
     )
 
-    m_hat_te <- .predict_m_model(
-      fit     = m_obj,
+    r_hat_te <- .predict_r_model(
+      fit     = r_obj,
       learner = learner,
       B_te    = B_te,
       Z_te    = Z_te
     )
 
     # -----------------------
-    # (c) Build pseudo outcome for J on training
-    #     T = (X - mhat)^2 * V(muhat)
+    # (c) Build the inverse-D regression target on training, where
+    #     D(Z) = E[(X - r(Z))^2 V(mu) | Z].
+    #
+    # Weighted least squares of 1 / A on Z with weights A targets
+    # 1 / E[A | Z], here with A = (X - r_hat)^2 V(mu_hat) + eps_J.
     # -----------------------
-    r_tr <- X_tr - m_hat_tr
-    Y_tr_inv <- 1 / (r_tr^2 + eps_J)
-    wt_tr    <- r_tr^2 + eps_J
+    x_minus_r_tr <- X_tr - r_hat_tr
+    D_contrib_tr <- x_minus_r_tr^2 * r_weights_tr
+    D_stable_tr  <- D_contrib_tr + eps_J
+    Y_tr_inv     <- 1 / D_stable_tr
+    wt_tr        <- D_stable_tr
 
     # -----------------------
-    # (d) Fit J^{-1}(Z) via weighted regression on training,
-    #     then convert to fold-specific J^{-1}(Z) on test
+    # (d) Fit D^{-1}(Z) via weighted regression on training.
     # -----------------------
     invar_obj <- .fit_invar_model(
       learner    = learner,
@@ -516,33 +534,34 @@ gvcm <- function(
       Z_te    = Z_te
     )
 
-    V_te <- .V_fun(mu_hat_te, link = link)
-    J_inv_te_fold <- invar_te / V_te
-    J_inv_te_fold <- pmax(J_inv_te_fold, eps_J)
+    D_inv_te_fold <- pmax(invar_te, eps_J)
 
     # -----------------------
     # store fold-specific predictions
     # -----------------------
     beta1_hat[idx_te] <- beta1_hat_te
     mu_hat[idx_te]    <- mu_hat_te
-    m_hat[idx_te]     <- m_hat_te
-    J_te_inv[idx_te]  <- J_inv_te_fold
+    r_hat[idx_te]     <- r_hat_te
+    D_inv_hat[idx_te] <- D_inv_te_fold
   }
 
   if (any(!is.finite(beta1_hat)) || any(!is.finite(mu_hat)) ||
-      any(!is.finite(m_hat))     || any(!is.finite(J_te_inv))) {
+      any(!is.finite(r_hat))     || any(!is.finite(D_inv_hat))) {
     stop("Non-finite nuisance predictions encountered. Check eps_J, learner settings, and nuisance model fits.")
   }
 
   # -----------------------
   # 5) Compute theta + se via EIF
-  # EIF (canonical):
-  #   phi_i = beta1(Z_i) - theta + (X_i - m(Z_i)) * (Y_i - mu_i) / J(Z_i)
-  # Since J_te_inv stores 1 / J_hat(Z_i), we compute:
-  #   theta_hat = mean( beta1_hat + (X - m_hat) * (Y - mu_hat) * J_te_inv )
+  # EIF (canonical-link representation):
+  #   phi_i = beta1(Z_i) - theta
+  #           + (X_i - r(Z_i)) * (Y_i - mu_i) / D(Z_i)
+  # Since D_inv_hat stores 1 / D_hat(Z_i), we compute:
+  #   theta_hat = mean(
+  #     beta1_hat + (X - r_hat) * (Y - mu_hat) * D_inv_hat
+  #   )
   # -----------------------
-  X_tilde  <- Xv - m_hat
-  adj_term <- X_tilde * (Yv - mu_hat) * J_te_inv
+  X_tilde  <- Xv - r_hat
+  adj_term <- X_tilde * (Yv - mu_hat) * D_inv_hat
 
   theta_hat <- mean(beta1_hat + adj_term)
 
@@ -564,8 +583,9 @@ gvcm <- function(
     link      = link,
     learner   = learner,
     beta1_hat = beta1_hat,
-    m_hat     = m_hat,
+    r_hat     = r_hat,
     mu_hat    = mu_hat,
-    J_inv_hat = J_te_inv
+    D_inv_hat = D_inv_hat,
+    J_inv_hat = D_inv_hat
   )
 }

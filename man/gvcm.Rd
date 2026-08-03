@@ -17,13 +17,13 @@ gvcm(
   eps_J = 1e-06,
   sieve_args = list(basis = "ns", df = NULL, alpha = 1, nfolds_glmnet = 5, lambda_rule =
     "lambda.min"),
-  net_args = list(hidden_dims = c(32), dropout = 0, n_residual = 1, activation = "silu",
-    lr = 5e-04, epochs = 200, batch_size = 32, weight_decay = 1e-04, valid_prop = 0.1,
-    early_stop_patience = 15, min_delta = 1e-04, device = "cpu", seed = 1, verbose =
-    FALSE),
+  net_args = list(hidden_dims = c(64, 32), dropout = 0, n_residual = 1, activation =
+    "tanh", lr = 5e-04, epochs = 400, batch_size = 64, weight_decay = 1e-04, valid_prop =
+    0.15, early_stop_patience = 20, min_delta = 1e-04, device = "cpu", seed = 1, verbose
+    = FALSE),
   beta_net_args = list(lambda_beta1 = 1e-04),
-  m_net_args = list(),
-  invar_net_args = list()
+  invar_net_args = list(),
+  r_net_args = NULL
 )
 }
 \arguments{
@@ -50,9 +50,9 @@ deep network learner.}
 
 \item{crossfit_seed}{Random seed used to generate cross-fitting folds.}
 
-\item{eps_J}{Small positive constant used to lower-truncate the estimated
-inverse information term to avoid division by zero or numerically unstable
-values.}
+\item{eps_J}{Small positive stabilization constant used when estimating and
+lower-truncating the inverse canonical information \eqn{1/D(Z)}. The name
+is retained for backward compatibility.}
 
 \item{sieve_args}{A named list of tuning parameters for the sieve learner.
 Supported components are:
@@ -93,13 +93,15 @@ slope head \eqn{\beta_1(Z)} during beta-network training,
 \item any other components supported in \code{net_args}.
 }}
 
-\item{m_net_args}{Optional named list of deepnet tuning overrides used only
-for the \eqn{m(Z)=E(X\mid Z)} nuisance learner. These are merged on top of
-\code{net_args}.}
-
 \item{invar_net_args}{Optional named list of deepnet tuning overrides used
 only for the inverse-information nuisance learner. These are merged on top
 of \code{net_args}.}
+
+\item{r_net_args}{Optional named list of deepnet tuning overrides used only
+for the information-weighted exposure nuisance
+\deqn{r(Z)=\frac{E\{X V(\mu)\mid Z\}}{E\{V(\mu)\mid Z\}}.}
+These are merged on top of \code{net_args}. For the Gaussian identity link,
+this reduces to \eqn{E(X\mid Z)}.}
 }
 \value{
 A list with components
@@ -112,9 +114,11 @@ A list with components
 \item \code{link}: link used,
 \item \code{learner}: nuisance learner used,
 \item \code{beta1_hat}: cross-fitted estimates of \eqn{\beta_1(Z_i)},
-\item \code{m_hat}: cross-fitted estimates of \eqn{E(X\mid Z_i)},
+\item \code{r_hat}: cross-fitted estimates of the information-weighted
+exposure regression \eqn{r(Z_i)},
 \item \code{mu_hat}: cross-fitted estimates of \eqn{E(Y\mid X_i,Z_i)},
-\item \code{J_inv_hat}: cross-fitted estimates of \eqn{1/J(Z_i)},
+\item \code{D_inv_hat}: cross-fitted estimates of \eqn{1/D(Z_i)},\code{r_hat}
+\code{J_inv_hat}: deprecated aliases for \code{D_inv_hat}.
 }
 }
 \description{

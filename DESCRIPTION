@@ -1,7 +1,7 @@
 Package: gvcm
 Type: Package
 Title: Double Machine Learning for Generalized Varying Coefficient Models
-Version: 0.2.0
+Version: 0.3.0
 Authors@R: 
     person(given = "Maosen",
            family = "Peng",

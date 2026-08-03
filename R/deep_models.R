@@ -67,7 +67,7 @@ NULL
 ResidualBlock <- torch::nn_module(
   "ResidualBlock",
 
-  initialize = function(dim, dropout = 0, activation = "silu") {
+  initialize = function(dim, dropout = 0, activation = "tanh") {
     self$fc1 <- torch::nn_linear(dim, dim)
     self$fc2 <- torch::nn_linear(dim, dim)
     self$drop <- torch::nn_dropout(p = dropout)
@@ -96,10 +96,10 @@ BetaTwoHeadNet <- torch::nn_module(
 
   initialize = function(
     p,
-    hidden_dims = c(32),
+    hidden_dims = c(64, 32),
     dropout = 0,
     n_residual = 1,
-    activation = "silu"
+    activation = "tanh"
   ) {
     stopifnot(length(hidden_dims) >= 1)
 
@@ -173,10 +173,10 @@ BetaTwoHeadNet <- torch::nn_module(
   link <- match.arg(link, c("gaussian","binomial","poisson"))
 
   defaults <- list(
-    hidden_dims = c(32),
+    hidden_dims = c(64, 32),
     dropout = 0,
     n_residual = 1,
-    activation = "silu",
+    activation = "tanh",
     lr = 5e-4,
     epochs = 200,
     batch_size = 32,
@@ -437,19 +437,19 @@ BetaTwoHeadNet <- torch::nn_module(
 }
 
 # ============================================================
-# One-head regression network for m(z) = E[X | Z]
+# One-head regression network for the information-weighted r(Z)
 # ============================================================
 
 #' @noRd
-MRegressionNet <- torch::nn_module(
-  "MRegressionNet",
+RRegressionNet <- torch::nn_module(
+  "RRegressionNet",
 
   initialize = function(
     p,
-    hidden_dims = c(32),
+    hidden_dims = c(64, 32),
     dropout = 0,
     n_residual = 1,
-    activation = "silu"
+    activation = "tanh"
   ) {
     stopifnot(length(hidden_dims) >= 1)
 
@@ -479,7 +479,7 @@ MRegressionNet <- torch::nn_module(
       )
     }
 
-    self$head_m <- torch::nn_linear(last_dim, 1)
+    self$head_r <- torch::nn_linear(last_dim, 1)
   },
 
   forward = function(z) {
@@ -501,18 +501,19 @@ MRegressionNet <- torch::nn_module(
       }
     }
 
-    self$head_m(h)
+    self$head_r(h)
   }
 )
 
 # ============================================================
-# Fit m deepnet
+# Fit r deepnet by information-weighted least squares
 # ============================================================
 
 #' @noRd
-.fit_m_deepnet <- function(
+.fit_r_deepnet <- function(
     Z_tr,
     X_tr,
+    r_weights_tr,
     net_args
 ) {
   if (!requireNamespace("torch", quietly = TRUE)) {
@@ -520,10 +521,10 @@ MRegressionNet <- torch::nn_module(
   }
 
   defaults <- list(
-    hidden_dims = c(32),
+    hidden_dims = c(64, 32),
     dropout = 0,
     n_residual = 1,
-    activation = "silu",
+    activation = "tanh",
     lr = 5e-4,
     epochs = 200,
     batch_size = 32,
@@ -541,22 +542,27 @@ MRegressionNet <- torch::nn_module(
   if (!is.matrix(Z_tr) || !is.numeric(Z_tr)) {
     stop("Z_tr must be a numeric matrix.")
   }
-  if (!is.numeric(X_tr)) {
-    stop("X_tr must be a numeric vector.")
+  if (!is.numeric(X_tr) || !is.numeric(r_weights_tr)) {
+    stop("X_tr and r_weights_tr must be numeric vectors.")
   }
 
   Z_tr <- .as_matrix_float(Z_tr)
   X_tr <- as.numeric(X_tr)
+  r_weights_tr <- as.numeric(r_weights_tr)
 
-  if (any(!is.finite(Z_tr)) || any(!is.finite(X_tr))) {
-    stop("Z_tr and X_tr must be finite.")
+  if (any(!is.finite(Z_tr)) || any(!is.finite(X_tr)) ||
+      any(!is.finite(r_weights_tr))) {
+    stop("Z_tr, X_tr, and r_weights_tr must be finite.")
   }
 
   n <- nrow(Z_tr)
   p <- ncol(Z_tr)
 
-  if (length(X_tr) != n) {
-    stop("Z_tr and X_tr must have compatible lengths.")
+  if (length(X_tr) != n || length(r_weights_tr) != n) {
+    stop("Z_tr, X_tr, and r_weights_tr must have compatible lengths.")
+  }
+  if (any(r_weights_tr < 0) || sum(r_weights_tr) <= 0) {
+    stop("r_weights_tr must be nonnegative and have positive sum.")
   }
 
   set.seed(net_args$seed)
@@ -569,7 +575,7 @@ MRegressionNet <- torch::nn_module(
   idx_valid <- idx_all[seq_len(n_valid)]
   idx_train <- idx_all[-seq_len(n_valid)]
   if (length(idx_train) == 0L) {
-    stop("Empty training split for m deepnet; reduce valid_prop or increase sample size.")
+    stop("Empty training split for r deepnet; reduce valid_prop or increase sample size.")
   }
 
   z_train <- torch::torch_tensor(
@@ -582,9 +588,14 @@ MRegressionNet <- torch::nn_module(
     dtype = torch::torch_float(),
     device = device
   )
+  w_train <- torch::torch_tensor(
+    matrix(r_weights_tr[idx_train], ncol = 1),
+    dtype = torch::torch_float(),
+    device = device
+  )
 
   z_valid <- torch::torch_tensor(
-    Z_tr[idx_valid, ],
+    Z_tr[idx_valid, , drop = FALSE],
     dtype = torch::torch_float(),
     device = device
   )
@@ -593,8 +604,13 @@ MRegressionNet <- torch::nn_module(
     dtype = torch::torch_float(),
     device = device
   )
+  w_valid <- torch::torch_tensor(
+    matrix(r_weights_tr[idx_valid], ncol = 1),
+    dtype = torch::torch_float(),
+    device = device
+  )
 
-  model <- MRegressionNet(
+  model <- RRegressionNet(
     p = p,
     hidden_dims = net_args$hidden_dims,
     dropout = net_args$dropout,
@@ -630,11 +646,12 @@ MRegressionNet <- torch::nn_module(
 
       zb <- z_train[idx_b, ]
       xb <- x_train[idx_b, ]
+      wb <- w_train[idx_b, ]
 
       optimizer$zero_grad()
 
       pred_b <- model(zb)
-      loss <- torch::nnf_mse_loss(pred_b, xb)
+      loss <- .weighted_mse_loss(pred_b, xb, wb)
 
       loss$backward()
       torch::nn_utils_clip_grad_norm_(model$parameters, max_norm = 5)
@@ -646,13 +663,13 @@ MRegressionNet <- torch::nn_module(
     model$eval()
     torch::with_no_grad({
       pred_val <- model(z_valid)
-      valid_loss <- torch::nnf_mse_loss(pred_val, x_valid)$item()
+      valid_loss <- .weighted_mse_loss(pred_val, x_valid, w_valid)$item()
     })
 
     if (isTRUE(net_args$verbose)) {
       message(
         sprintf(
-          "m deepnet epoch %d | train_loss = %.5f | valid_loss = %.5f",
+          "r deepnet epoch %d | train_loss = %.5f | valid_loss = %.5f",
           epoch, epoch_loss, valid_loss
         )
       )
@@ -668,7 +685,7 @@ MRegressionNet <- torch::nn_module(
 
     if (patience_count >= net_args$early_stop_patience) {
       if (isTRUE(net_args$verbose)) {
-        message("m deepnet early stopping triggered.")
+        message("r deepnet early stopping triggered.")
       }
       break
     }
@@ -687,11 +704,11 @@ MRegressionNet <- torch::nn_module(
 }
 
 # ============================================================
-# Predict m deepnet
+# Predict r deepnet
 # ============================================================
 
 #' @noRd
-.predict_m_deepnet <- function(
+.predict_r_deepnet <- function(
     fit,
     Z_te
 ) {
@@ -729,10 +746,10 @@ InvarRegressionNet <- torch::nn_module(
 
   initialize = function(
     p,
-    hidden_dims = c(32),
+    hidden_dims = c(64, 32),
     dropout = 0,
     n_residual = 1,
-    activation = "silu"
+    activation = "tanh"
   ) {
     stopifnot(length(hidden_dims) >= 1)
 
@@ -794,7 +811,12 @@ InvarRegressionNet <- torch::nn_module(
 
 #' @noRd
 .weighted_mse_loss <- function(pred, target, weight) {
-  torch::torch_mean(weight * (pred - target)^2)
+  numerator <- torch::torch_sum(weight * (pred - target)^2)
+  denominator <- torch::torch_clamp(
+    torch::torch_sum(weight),
+    min = 1e-12
+  )
+  numerator / denominator
 }
 
 # ============================================================
@@ -813,10 +835,10 @@ InvarRegressionNet <- torch::nn_module(
   }
 
   defaults <- list(
-    hidden_dims = c(32),
+    hidden_dims = c(64, 32),
     dropout = 0,
     n_residual = 1,
-    activation = "silu",
+    activation = "tanh",
     lr = 5e-4,
     epochs = 200,
     batch_size = 32,
@@ -891,7 +913,7 @@ InvarRegressionNet <- torch::nn_module(
   )
 
   z_valid <- torch::torch_tensor(
-    Z_tr[idx_valid, ],
+    Z_tr[idx_valid, , drop = FALSE],
     dtype = torch::torch_float(),
     device = device
   )
@@ -1009,7 +1031,7 @@ InvarRegressionNet <- torch::nn_module(
 
 # ============================================================
 # Predict inverse-information deepnet
-# Returns q_hat(Z), not yet divided by V(mu)
+# Returns the fitted inverse canonical information D^{-1}(Z)
 # ============================================================
 
 #' @noRd

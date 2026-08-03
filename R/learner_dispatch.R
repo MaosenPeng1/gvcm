@@ -72,11 +72,12 @@ NULL
 }
 
 #' @noRd
-.fit_m_model <- function(
+.fit_r_model <- function(
     learner,
     B_tr,
     Z_tr,
     X_tr,
+    r_weights_tr,
     sieve_args,
     net_args
 ) {
@@ -84,9 +85,10 @@ NULL
 
   if (learner == "sieve") {
     return(
-      .fit_m_sieve(
+      .fit_r_sieve(
         B_tr = B_tr,
         X_tr = X_tr,
+        r_weights_tr = r_weights_tr,
         sieve_args = sieve_args
       )
     )
@@ -94,9 +96,10 @@ NULL
 
   if (learner == "deepnet") {
     return(
-      .fit_m_deepnet(
+      .fit_r_deepnet(
         Z_tr = Z_tr,
         X_tr = X_tr,
+        r_weights_tr = r_weights_tr,
         net_args = net_args
       )
     )
@@ -104,7 +107,7 @@ NULL
 }
 
 #' @noRd
-.predict_m_model <- function(
+.predict_r_model <- function(
     fit,
     learner,
     B_te,
@@ -114,7 +117,7 @@ NULL
 
   if (learner == "sieve") {
     return(
-      .predict_m_sieve(
+      .predict_r_sieve(
         fit = fit,
         B_te = B_te
       )
@@ -123,7 +126,7 @@ NULL
 
   if (learner == "deepnet") {
     return(
-      .predict_m_deepnet(
+      .predict_r_deepnet(
         fit = fit,
         Z_te = Z_te
       )

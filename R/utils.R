@@ -216,12 +216,51 @@ NULL
   pmax(exp(eta), 1e-12)
 }
 
+#' Convert a fitted linear predictor to the stabilized conditional mean used
+#' throughout nuisance fitting and EIF evaluation.
+#' @noRd
+.mu_from_eta <- function(eta, link = c("gaussian","binomial","poisson")) {
+  link <- match.arg(link, c("gaussian","binomial","poisson"))
+  eta <- as.numeric(eta)
+
+  if (link == "poisson") {
+    eta <- pmin(pmax(eta, -6), 6)
+  }
+
+  mu <- .inv_link(eta, link = link)
+  if (link == "binomial") {
+    mu <- pmin(pmax(mu, 1e-2), 1 - 1e-2)
+  }
+  mu
+}
+
 #' @noRd
 .V_fun <- function(mu, link = c("gaussian","binomial","poisson")) {
   link <- match.arg(link, c("gaussian","binomial","poisson"))
   if (link == "gaussian") return(rep(1, length(mu)))
   if (link == "binomial") return(pmax(mu * (1 - mu), 1e-12))
   pmax(mu, 1e-12) # poisson
+}
+
+#' Canonical-link information weights for estimating r(Z).
+#'
+#' For Gaussian identity, Bernoulli logit, and Poisson log links, respectively,
+#' these are 1, mu * (1 - mu), and mu. The population weighted least-squares
+#' target is \eqn{r(Z) = E[X V(\mu) \mid Z] / E[V(\mu) \mid Z]}.
+#' @noRd
+.r_weights <- function(mu_hat, link = c("gaussian","binomial","poisson")) {
+  link <- match.arg(link, c("gaussian","binomial","poisson"))
+  mu_hat <- as.numeric(mu_hat)
+
+  if (any(!is.finite(mu_hat))) {
+    stop("mu_hat must be finite when constructing r-model weights.")
+  }
+
+  weights <- .V_fun(mu_hat, link = link)
+  if (any(!is.finite(weights)) || any(weights < 0) || sum(weights) <= 0) {
+    stop("r-model weights must be finite, nonnegative, and have positive sum.")
+  }
+  weights
 }
 
 #' @noRd

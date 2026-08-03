@@ -44,6 +44,7 @@ NULL
     if (length(weights) != n) stop("weights must have the same length as y.")
     if (any(!is.finite(weights))) stop("weights must be finite.")
     if (any(weights < 0)) stop("weights must be nonnegative.")
+    if (sum(weights) <= 0) stop("weights must have positive sum.")
     args$weights <- weights
   }
 
@@ -146,12 +147,14 @@ NULL
 
 
 # ------------------------------------------------------------
-# m-model: fit m(Z) = E[X | Z]
+# r-model: fit the information-weighted exposure regression
+#   r(Z) = E[X V(mu) | Z] / E[V(mu) | Z]
 # ------------------------------------------------------------
 #' @noRd
-.fit_m_sieve <- function(
+.fit_r_sieve <- function(
     B_tr,
     X_tr,
+    r_weights_tr,
     sieve_args
 ) {
   alpha <- sieve_args$alpha
@@ -161,6 +164,7 @@ NULL
   .cv_glmnet_fit(
     x = B_tr,
     y = as.numeric(X_tr),
+    weights = as.numeric(r_weights_tr),
     family = "gaussian",
     alpha = alpha,
     nfolds = nfolds,
@@ -170,10 +174,10 @@ NULL
 
 
 # ------------------------------------------------------------
-# m-model prediction
+# r-model prediction
 # ------------------------------------------------------------
 #' @noRd
-.predict_m_sieve <- function(
+.predict_r_sieve <- function(
     fit,
     B_te
 ) {
@@ -188,7 +192,7 @@ NULL
 
 # ------------------------------------------------------------
 # inverse-information model:
-# weighted regression for the inverse quantity
+# weighted regression for the inverse canonical information D^{-1}(Z)
 # ------------------------------------------------------------
 #' @noRd
 .fit_invar_sieve <- function(
